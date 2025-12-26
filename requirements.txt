@@ -1,7 +1,7 @@
-# CORE DEPENDENCIES
+# Probada con Python 3.13 en Streamlit Community
 streamlit==1.28.0
-pandas==2.1.4
-numpy==1.24.4
+pandas==2.2.0
+numpy==1.26.4
 paramiko==3.3.1
 cryptography==41.0.7
 tomli==2.0.1
@@ -10,3 +10,4 @@ openpyxl==3.1.2
 python-dateutil==2.8.2
 psutil==5.9.6
 email-validator==2.0.0
+python-magic-bin==0.4.14  # ¡CRÍTICO para Streamlit Cloud!
