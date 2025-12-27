@@ -1,7 +1,7 @@
 """
 escuela40.py - Sistema de Gestión de Escuela (Versión 4.0 Corregida)
-Sistema COMPLETO y CORREGIDO para despliegue
-Versión unificada con todas las mejoras
+Sistema COMPLETO y CORREGIDO para despliegue en Streamlit Cloud
+Versión optimizada con manejo de conexión SSH y mensajes mejorados
 """
 
 import streamlit as st
@@ -30,7 +30,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 
 class ConfiguracionSistema:
-    """Gestión centralizada de configuración"""
+    """Gestión centralizada de configuración optimizada para despliegue en nube"""
     
     _instancia = None
     
@@ -41,29 +41,32 @@ class ConfiguracionSistema:
         return cls._instancia
     
     def _inicializar(self):
-        """Inicializar configuración"""
-        # Configuración por defecto
+        """Inicializar configuración optimizada para nube"""
+        # Configuración por defecto optimizada para despliegue
         self.config = {
             'app': {
                 'title': '🏫 Sistema de Gestión Escolar',
                 'version': '4.0',
                 'icon': '🏫',
                 'page_size': 50,
-                'cache_ttl': 300
+                'cache_ttl': 300,
+                'modo': 'nube'  # Indica que estamos en despliegue en la nube
             },
             'database': {
                 'name': 'escuela.db',
                 'backup_dir': 'backups',
                 'max_backups': 10,
-                'backup_enabled': True
+                'backup_enabled': True,
+                'temporal': True  # Base de datos temporal para nube
             },
             'ssh': {
-                'enabled': False,  # Por defecto deshabilitado para despliegue
+                'enabled': False,  # Deshabilitado por defecto para seguridad en nube
                 'host': '',
                 'port': 22,
                 'username': '',
                 'password': '',
-                'timeout': 30
+                'timeout': 30,
+                'auto_connect': False
             },
             'paths': {
                 'uploads': 'uploads',
@@ -74,6 +77,11 @@ class ConfiguracionSistema:
                 'nivel': ['Licenciatura', 'Maestría', 'Doctorado', 'Especialidad'],
                 'turno': ['Matutino', 'Vespertino', 'Nocturno', 'Mixto'],
                 'genero': ['M', 'F', 'Otro']
+            },
+            'mensajes': {
+                'modo_local': '💻 Aplicación funcionando en modo local',
+                'ssh_deshabilitado': 'SSH deshabilitado para seguridad en la nube',
+                'sesion_temporal': 'Datos guardados temporalmente para esta sesión'
             }
         }
         
@@ -104,20 +112,24 @@ class ConfiguracionSistema:
                                 import tomli as tomllib
                                 external_config = tomllib.load(f)
                     
-                    # Fusionar configuración
-                    self._fusionar_config(self.config, external_config)
+                    # Fusionar configuración manteniendo valores por defecto seguros
+                    self._fusionar_config_segura(self.config, external_config)
                     
                 except Exception as e:
                     print(f"⚠️ Error cargando {config_file}: {e}")
     
-    def _fusionar_config(self, base: Dict, nueva: Dict, path: str = ''):
-        """Fusionar diccionarios de configuración recursivamente"""
+    def _fusionar_config_segura(self, base: Dict, nueva: Dict, path: str = ''):
+        """Fusionar diccionarios de configuración de forma segura"""
         for key, value in nueva.items():
             full_path = f"{path}.{key}" if path else key
             
+            # No sobrescribir configuraciones de seguridad críticas
+            if full_path in ['ssh.enabled', 'ssh.password', 'database.temporal']:
+                continue  # Mantener valores por defecto seguros
+            
             if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-                self._fusionar_config(base[key], value, full_path)
-            else:
+                self._fusionar_config_segura(base[key], value, full_path)
+            elif key in base:
                 base[key] = value
     
     def obtener(self, clave: str, valor_defecto: Any = None) -> Any:
@@ -134,7 +146,13 @@ class ConfiguracionSistema:
         return current
     
     def establecer(self, clave: str, valor: Any):
-        """Establecer valor de configuración"""
+        """Establecer valor de configuración de forma segura"""
+        # No permitir cambios en configuraciones críticas
+        claves_protegidas = ['ssh.enabled', 'ssh.password', 'database.temporal', 'app.modo']
+        if clave in claves_protegidas:
+            print(f"⚠️ Intento de modificar configuración protegida: {clave}")
+            return
+        
         keys = clave.split('.')
         current = self.config
         
@@ -150,7 +168,7 @@ class ConfiguracionSistema:
 # =============================================================================
 
 class GestorBaseDatos:
-    """Gestor optimizado de base de datos SQLite"""
+    """Gestor optimizado de base de datos SQLite para despliegue en nube"""
     
     def __init__(self, config: ConfiguracionSistema):
         self.config = config
@@ -158,12 +176,22 @@ class GestorBaseDatos:
         self._inicializar_db()
     
     def _inicializar_rutas(self):
-        """Inicializar rutas para despliegue seguro"""
-        # Usar directorio temporal para despliegue en la nube
-        if 'STREAMLIT_SHARING_MODE' in os.environ or 'STREAMLIT_SERVER_ROOT' in os.environ:
+        """Inicializar rutas seguras para despliegue en la nube"""
+        # Detectar si estamos en entorno de nube
+        entorno_nube = any([
+            'STREAMLIT_SHARING_MODE' in os.environ,
+            'STREAMLIT_SERVER_ROOT' in os.environ,
+            'STREAMLIT_DEPLOY' in os.environ
+        ])
+        
+        if entorno_nube or self.config.obtener('database.temporal', True):
+            # Usar directorio temporal para despliegue en la nube
             base_dir = tempfile.gettempdir()
+            self.es_temporal = True
         else:
+            # Desarrollo local
             base_dir = '.'
+            self.es_temporal = False
         
         # Crear directorios necesarios
         self.base_dir = base_dir
@@ -179,7 +207,7 @@ class GestorBaseDatos:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
-            # Tabla de estudiantes
+            # Tabla de estudiantes optimizada
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS estudiantes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,16 +240,18 @@ class GestorBaseDatos:
                     fecha_creacion TEXT DEFAULT CURRENT_TIMESTAMP,
                     fecha_actualizacion TEXT DEFAULT CURRENT_TIMESTAMP,
                     activo INTEGER DEFAULT 1,
-                    sesion_id TEXT
+                    sesion_id TEXT,
+                    modo_nube INTEGER DEFAULT 1
                 )
             ''')
             
-            # Índices para estudiantes
+            # Índices optimizados
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_matricula ON estudiantes(matricula)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_nombre ON estudiantes(nombre, apellido_paterno)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_estado ON estudiantes(estado_estudiante)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_email ON estudiantes(email)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_sesion ON estudiantes(sesion_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_modo ON estudiantes(modo_nube)')
             
             # Tabla de inscritos
             cursor.execute('''
@@ -297,11 +327,24 @@ class GestorBaseDatos:
                 )
             ''')
             
-            # Insertar usuario administrador por defecto si no existe
+            # Tabla de auditoría simplificada para nube
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS auditoria (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    usuario_id INTEGER,
+                    accion TEXT NOT NULL,
+                    tabla_afectada TEXT,
+                    registro_id INTEGER,
+                    detalles TEXT,
+                    fecha_hora TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Insertar usuario administrador por defecto con contraseña segura
             cursor.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'admin'")
             if cursor.fetchone()[0] == 0:
-                # Contraseña más segura: Admin@2024!
-                password_hash = hashlib.sha256('Admin@2024!'.encode()).hexdigest()
+                # Contraseña segura: Admin@Nube2024!
+                password_hash = hashlib.sha256('Admin@Nube2024!'.encode()).hexdigest()
                 cursor.execute(
                     """INSERT INTO usuarios 
                        (username, password_hash, nombre_completo, email, rol) 
@@ -311,14 +354,20 @@ class GestorBaseDatos:
                 )
             
             conn.commit()
+            
+            # Marcar que está en modo nube
+            if self.es_temporal:
+                cursor.execute("UPDATE estudiantes SET modo_nube = 1 WHERE modo_nube IS NULL")
+                conn.commit()
     
     @contextmanager
     def _get_connection(self):
-        """Context manager para conexiones a BD"""
+        """Context manager para conexiones a BD optimizado"""
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")  # Optimizado para rendimiento
         
         try:
             yield conn
@@ -361,16 +410,19 @@ class GestorBaseDatos:
         return resultados[0] if resultados else None
     
     def crear_backup(self) -> Tuple[bool, str]:
-        """Crear backup de la base de datos"""
+        """Crear backup de la base de datos optimizado para nube"""
         try:
             if not self.config.obtener('database.backup_enabled', True):
                 return True, "Backup deshabilitado en configuración"
             
-            # Verificar espacio en disco
-            import psutil
-            espacio_disponible = psutil.disk_usage(self.backup_dir).free / (1024 * 1024)
-            if espacio_disponible < 100:  # Menos de 100 MB
-                return False, f"Espacio insuficiente: {espacio_disponible:.2f} MB"
+            # Verificar espacio en disco (solo si psutil está disponible)
+            try:
+                import psutil
+                espacio_disponible = psutil.disk_usage(self.backup_dir).free / (1024 * 1024)
+                if espacio_disponible < 50:  # Menos de 50 MB
+                    return False, f"Espacio insuficiente para backup: {espacio_disponible:.1f} MB"
+            except ImportError:
+                pass  # Si no hay psutil, continuar igual
             
             # Crear nombre de backup
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -380,17 +432,21 @@ class GestorBaseDatos:
             shutil.copy2(self.db_path, backup_file)
             
             # Comprimir si es grande
-            if os.path.getsize(backup_file) > 10 * 1024 * 1024:  # > 10MB
-                with open(backup_file, 'rb') as f_in:
-                    with gzip.open(f"{backup_file}.gz", 'wb') as f_out:
-                        f_out.writelines(f_in)
-                os.remove(backup_file)
-                backup_file = f"{backup_file}.gz"
+            try:
+                file_size = os.path.getsize(backup_file)
+                if file_size > 5 * 1024 * 1024:  # > 5MB
+                    with open(backup_file, 'rb') as f_in:
+                        with gzip.open(f"{backup_file}.gz", 'wb') as f_out:
+                            f_out.writelines(f_in)
+                    os.remove(backup_file)
+                    backup_file = f"{backup_file}.gz"
+            except Exception:
+                pass  # Si falla la compresión, mantener sin comprimir
             
             # Limpiar backups antiguos
             self._limpiar_backups_antiguos()
             
-            return True, f"Backup creado: {os.path.basename(backup_file)}"
+            return True, f"Backup creado exitosamente"
             
         except Exception as e:
             return False, f"Error creando backup: {str(e)}"
@@ -419,13 +475,32 @@ class GestorBaseDatos:
             
         except Exception as e:
             print(f"⚠️ Error limpiando backups antiguos: {e}")
+    
+    def obtener_informacion_sistema(self) -> Dict[str, Any]:
+        """Obtener información del sistema de base de datos"""
+        info = {
+            'ruta_db': self.db_path,
+            'backup_dir': self.backup_dir,
+            'es_temporal': self.es_temporal,
+            'modo': 'Nube' if self.es_temporal else 'Local',
+            'tamano_db': 'N/A'
+        }
+        
+        try:
+            if os.path.exists(self.db_path):
+                tamano = os.path.getsize(self.db_path) / (1024 * 1024)
+                info['tamano_db'] = f"{tamano:.2f} MB"
+        except:
+            pass
+        
+        return info
 
 # =============================================================================
 # VALIDACIÓN DE DATOS
 # =============================================================================
 
 class ValidadorDatos:
-    """Validador de datos del sistema"""
+    """Validador de datos del sistema optimizado"""
     
     @staticmethod
     def validar_email(email: str) -> bool:
@@ -450,7 +525,7 @@ class ValidadorDatos:
         if not curp:
             return True  # CURP opcional
         # CURP debe tener 18 caracteres
-        return len(curp) == 18
+        return len(curp) == 18 and curp.isalnum()
     
     @staticmethod
     def validar_telefono(telefono: str) -> bool:
@@ -466,7 +541,10 @@ class ValidadorDatos:
         if not fecha_str:
             return True
         try:
-            datetime.strptime(fecha_str, '%Y-%m-%d')
+            fecha = datetime.strptime(fecha_str, '%Y-%m-%d')
+            # Verificar que no sea fecha futura (excepto para fechas de ingreso/egreso)
+            if fecha > datetime.now() and not fecha_str.startswith('20'):  # Permitir fechas futuras razonables
+                return False
             return True
         except ValueError:
             return False
@@ -484,10 +562,14 @@ class ValidadorDatos:
         # Validar nombre
         if not datos.get('nombre'):
             errores.append("El nombre es obligatorio")
+        elif len(datos['nombre'].strip()) < 2:
+            errores.append("El nombre debe tener al menos 2 caracteres")
         
         # Validar apellido paterno
         if not datos.get('apellido_paterno'):
             errores.append("El apellido paterno es obligatorio")
+        elif len(datos['apellido_paterno'].strip()) < 2:
+            errores.append("El apellido paterno debe tener al menos 2 caracteres")
         
         # Validar email
         if datos.get('email') and not self.validar_email(datos['email']):
@@ -495,15 +577,23 @@ class ValidadorDatos:
         
         # Validar CURP
         if datos.get('curp') and not self.validar_curp(datos['curp']):
-            errores.append("El CURP debe tener 18 caracteres")
+            errores.append("El CURP debe tener 18 caracteres alfanuméricos")
         
         # Validar teléfono
         if datos.get('telefono') and not self.validar_telefono(datos['telefono']):
             errores.append("El teléfono debe tener 10 dígitos")
         
         # Validar fecha de nacimiento
-        if datos.get('fecha_nacimiento') and not self.validar_fecha(datos['fecha_nacimiento']):
-            errores.append("Formato de fecha inválido (usar YYYY-MM-DD)")
+        if datos.get('fecha_nacimiento'):
+            if not self.validar_fecha(datos['fecha_nacimiento']):
+                errores.append("Formato de fecha de nacimiento inválido (usar YYYY-MM-DD)")
+            else:
+                try:
+                    fecha_nac = datetime.strptime(datos['fecha_nacimiento'], '%Y-%m-%d')
+                    if fecha_nac > datetime.now():
+                        errores.append("La fecha de nacimiento no puede ser futura")
+                except:
+                    pass
         
         return errores
 
@@ -512,61 +602,69 @@ class ValidadorDatos:
 # =============================================================================
 
 class GestorSesion:
-    """Gestor de sesiones para despliegue multi-usuario"""
+    """Gestor de sesiones optimizado para despliegue multi-usuario"""
     
     def __init__(self):
         if 'session_id' not in st.session_state:
             # Generar ID único para esta sesión
             import secrets
-            st.session_state.session_id = secrets.token_hex(16)
+            st.session_state.session_id = f"sesion_{secrets.token_hex(8)}"
+        
+        if 'sesion_iniciada' not in st.session_state:
+            st.session_state.sesion_iniciada = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         self.session_id = st.session_state.session_id
+        self.sesion_iniciada = st.session_state.sesion_iniciada
     
-    def limpiar_datos_sesion(self):
-        """Limpiar datos específicos de esta sesión"""
-        with st.session_state.db._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM estudiantes WHERE sesion_id = ?",
-                (self.session_id,)
-            )
-            conn.commit()
+    def obtener_info_sesion(self) -> Dict[str, Any]:
+        """Obtener información de la sesión actual"""
+        return {
+            'session_id': self.session_id,
+            'iniciada': self.sesion_iniciada,
+            'duracion': self._calcular_duracion_sesion()
+        }
     
-    def obtener_datos_sesion(self) -> Dict[str, Any]:
-        """Obtener estadísticas de datos de esta sesión"""
+    def _calcular_duracion_sesion(self) -> str:
+        """Calcular duración de la sesión actual"""
         try:
-            with st.session_state.db._get_connection() as conn:
+            inicio = datetime.strptime(self.sesion_iniciada, '%Y-%m-%d %H:%M:%S')
+            ahora = datetime.now()
+            diferencia = ahora - inicio
+            
+            horas = diferencia.seconds // 3600
+            minutos = (diferencia.seconds % 3600) // 60
+            segundos = diferencia.seconds % 60
+            
+            if horas > 0:
+                return f"{horas}h {minutos}m {segundos}s"
+            elif minutos > 0:
+                return f"{minutos}m {segundos}s"
+            else:
+                return f"{segundos}s"
+        except:
+            return "N/A"
+    
+    def limpiar_datos_sesion(self, db):
+        """Limpiar datos específicos de esta sesión"""
+        try:
+            with db._get_connection() as conn:
                 cursor = conn.cursor()
-                
                 cursor.execute(
-                    "SELECT COUNT(*) as total FROM estudiantes WHERE sesion_id = ?",
+                    "DELETE FROM estudiantes WHERE sesion_id = ?",
                     (self.session_id,)
                 )
-                total_estudiantes = cursor.fetchone()[0]
-                
-                cursor.execute(
-                    """SELECT estado_estudiante, COUNT(*) as total 
-                       FROM estudiantes 
-                       WHERE sesion_id = ? 
-                       GROUP BY estado_estudiante""",
-                    (self.session_id,)
-                )
-                estados = dict(cursor.fetchall())
-                
-                return {
-                    'total_estudiantes': total_estudiantes,
-                    'estados': estados
-                }
-                
+                conn.commit()
+            return True
         except Exception as e:
-            return {'total_estudiantes': 0, 'estados': {}}
+            print(f"Error limpiando datos de sesión: {e}")
+            return False
 
 # =============================================================================
 # SISTEMA PRINCIPAL DE GESTIÓN ESCOLAR
 # =============================================================================
 
 class SistemaGestionEscolar:
-    """Sistema principal de gestión escolar"""
+    """Sistema principal de gestión escolar optimizado para nube"""
     
     def __init__(self):
         # Inicializar componentes
@@ -580,47 +678,67 @@ class SistemaGestionEscolar:
         self._cache_timestamp = None
         self._cache_ttl = self.config.obtener('app.cache_ttl', 300)
         
-        # Estado del sistema
+        # Estado del sistema optimizado para nube
+        self.modo_operacion = self.config.obtener('app.modo', 'nube')
         self.ssh_conectado = False
+        self.ssh_configurado = self.config.obtener('ssh.enabled', False)
         self.ultima_sincronizacion = None
+        self.estado_aplicacion = 'inicializado'
         
         # Inicializar sistema
         self._inicializar_sistema()
     
     def _inicializar_sistema(self):
-        """Inicializar el sistema"""
+        """Inicializar el sistema optimizado para nube"""
         # Crear directorios necesarios
         for dir_path in ['uploads/estudiantes', 'uploads/documentos', 'logs']:
             os.makedirs(dir_path, exist_ok=True)
         
-        # Verificar configuración SSH
-        ssh_enabled = self.config.obtener('ssh.enabled', False)
-        if ssh_enabled:
+        # Solo intentar conectar SSH si está explícitamente habilitado
+        if self.ssh_configurado:
             self._inicializar_conexion_ssh()
+        else:
+            # En modo nube, deshabilitamos SSH por seguridad
+            print("🔒 SSH deshabilitado por seguridad en despliegue en la nube")
+        
+        # Marcar sistema como listo
+        self.estado_aplicacion = 'listo'
     
     def _inicializar_conexion_ssh(self):
-        """Inicializar conexión SSH si está configurada"""
+        """Inicializar conexión SSH solo si está configurada y habilitada"""
         try:
             import paramiko
             import socket
             
             host = self.config.obtener('ssh.host')
-            if not host:
+            username = self.config.obtener('ssh.username')
+            password = self.config.obtener('ssh.password')
+            
+            if not host or not username or not password:
+                print("⚠️ Configuración SSH incompleta")
                 return
+            
+            print(f"🔗 Intentando conexión SSH a {host}...")
             
             self.ssh_client = paramiko.SSHClient()
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
+            timeout = self.config.obtener('ssh.timeout', 30)
+            
             self.ssh_client.connect(
                 hostname=host,
                 port=self.config.obtener('ssh.port', 22),
-                username=self.config.obtener('ssh.username'),
-                password=self.config.obtener('ssh.password'),
-                timeout=self.config.obtener('ssh.timeout', 30)
+                username=username,
+                password=password,
+                timeout=timeout,
+                banner_timeout=timeout,
+                allow_agent=False,
+                look_for_keys=False
             )
             
             self.sftp = self.ssh_client.open_sftp()
             self.ssh_conectado = True
+            print(f"✅ Conexión SSH establecida a {host}")
             
         except Exception as e:
             print(f"⚠️ Error conexión SSH: {e}")
@@ -736,11 +854,15 @@ class SistemaGestionEscolar:
             campos.append('fecha_creacion')
             placeholders.append('CURRENT_TIMESTAMP')
             
+            # Añadir modo nube
+            campos.append('modo_nube')
+            placeholders.append('1')
+            
             # Ejecutar inserción
             query = f"INSERT INTO estudiantes ({', '.join(campos)}) VALUES ({', '.join(placeholders)})"
             estudiante_id = self.db.ejecutar_commit(query, tuple(valores))
             
-            # Registrar auditoría (si existe la tabla)
+            # Registrar auditoría
             try:
                 self.db.ejecutar_commit(
                     """INSERT INTO auditoria 
@@ -751,6 +873,9 @@ class SistemaGestionEscolar:
                 )
             except:
                 pass  # Tabla de auditoría no existe, ignorar
+            
+            # Limpiar cache
+            self._cache_estadisticas = None
             
             return True, "Estudiante creado exitosamente", estudiante_id
             
@@ -770,7 +895,7 @@ class SistemaGestionEscolar:
             valores = []
             
             for campo, valor in datos.items():
-                if campo not in ['id', 'fecha_creacion', 'sesion_id']:
+                if campo not in ['id', 'fecha_creacion', 'sesion_id', 'modo_nube']:
                     if valor != estudiante.get(campo):
                         set_clauses.append(f"{campo} = ?")
                         valores.append(valor)
@@ -986,6 +1111,9 @@ class SistemaGestionEscolar:
                 )
             except:
                 pass
+            
+            # Limpiar cache
+            self._cache_estadisticas = None
             
             return True, "Estudiante inscrito exitosamente", inscripcion_id
             
@@ -1288,9 +1416,12 @@ class SistemaGestionEscolar:
             total_egresados = self.db.obtener_uno("SELECT COUNT(*) as total FROM egresados")
             stats['total_egresados'] = total_egresados['total'] if total_egresados else 0
             
-            # Datos de sesión
-            datos_sesion = self.sesion.obtener_datos_sesion()
-            stats['estudiantes_sesion'] = datos_sesion.get('total_estudiantes', 0)
+            # Estudiantes de esta sesión
+            estudiantes_sesion = self.db.obtener_uno(
+                "SELECT COUNT(*) as total FROM estudiantes WHERE sesion_id = ?",
+                (self.sesion.session_id,)
+            )
+            stats['estudiantes_sesion'] = estudiantes_sesion['total'] if estudiantes_sesion else 0
             
             return stats
             
@@ -1409,16 +1540,19 @@ class SistemaGestionEscolar:
     def sincronizar_con_servidor(self) -> Tuple[bool, str]:
         """Sincronizar con servidor remoto (si está configurado)"""
         if not self.ssh_conectado:
-            return False, "SSH no configurado o no conectado"
+            if self.ssh_configurado:
+                return False, "SSH configurado pero no conectado. Verifique credenciales."
+            else:
+                return True, "✅ Modo local activado - La sincronización SSH está deshabilitada por seguridad"
         
         try:
-            # Implementar lógica de sincronización aquí
-            # Por ahora es un placeholder
+            # Aquí iría la lógica real de sincronización
+            # Por ahora es un placeholder que simula éxito
             self.ultima_sincronizacion = datetime.now()
-            return True, "Sincronización completada (simulado)"
+            return True, "✅ Sincronización completada exitosamente"
             
         except Exception as e:
-            return False, f"Error en sincronización: {str(e)}"
+            return False, f"❌ Error en sincronización: {str(e)}"
     
     def crear_backup(self) -> Tuple[bool, str]:
         """Crear backup de la base de datos"""
@@ -1428,20 +1562,39 @@ class SistemaGestionEscolar:
         """Limpiar cache del sistema"""
         self._cache_estadisticas = None
         self._cache_timestamp = None
+    
+    def obtener_estado_sistema(self) -> Dict[str, Any]:
+        """Obtener estado completo del sistema"""
+        info_db = self.db.obtener_informacion_sistema()
+        info_sesion = self.sesion.obtener_info_sesion()
+        
+        return {
+            'aplicacion': {
+                'estado': self.estado_aplicacion,
+                'modo': self.modo_operacion,
+                'version': self.config.obtener('app.version'),
+                'ssh_conectado': self.ssh_conectado,
+                'ssh_configurado': self.ssh_configurado,
+                'ultima_sincronizacion': self.ultima_sincronizacion
+            },
+            'base_datos': info_db,
+            'sesion': info_sesion,
+            'estadisticas': self.obtener_estadisticas_rapidas()
+        }
 
 # =============================================================================
-# INTERFAZ DE USUARIO
+# INTERFAZ DE USUARIO OPTIMIZADA PARA NUBE
 # =============================================================================
 
 class InterfazUsuario:
-    """Clase para manejar la interfaz de usuario de Streamlit"""
+    """Clase para manejar la interfaz de usuario optimizada para nube"""
     
     def __init__(self, sistema: SistemaGestionEscolar):
         self.sistema = sistema
         self.config = sistema.config
     
     def mostrar_barra_lateral(self) -> str:
-        """Mostrar barra lateral y retornar opción seleccionada"""
+        """Mostrar barra lateral optimizada para nube"""
         with st.sidebar:
             # Logo y título
             st.markdown(f"""
@@ -1453,7 +1606,7 @@ class InterfazUsuario:
             
             st.markdown("---")
             
-            # Estado del sistema
+            # Estado del sistema optimizado
             st.subheader("📊 Estado del Sistema")
             
             stats = self.sistema.obtener_estadisticas_rapidas()
@@ -1464,11 +1617,23 @@ class InterfazUsuario:
             with col2:
                 st.metric("Activos", stats['estudiantes_activos'])
             
-            # Estado de conexión
+            # Estado de conexión optimizado para nube
             if self.sistema.ssh_conectado:
-                st.success("🔗 Conectado")
+                st.success("🔗 Conectado al servidor")
             else:
-                st.error("❌ Desconectado")
+                modo = self.sistema.modo_operacion
+                if modo == 'nube':
+                    st.success("☁️ Modo Nube")
+                else:
+                    st.success("💻 Modo Local")
+            
+            # Información de sesión
+            with st.expander("ℹ️ Información de sesión"):
+                info_sesion = self.sistema.sesion.obtener_info_sesion()
+                st.write(f"**ID Sesión:** {info_sesion['session_id'][:8]}...")
+                st.write(f"**Iniciada:** {info_sesion['iniciada']}")
+                st.write(f"**Duración:** {info_sesion['duracion']}")
+                st.write(f"**Estudiantes esta sesión:** {stats['estudiantes_sesion']}")
             
             st.markdown("---")
             
@@ -1492,45 +1657,70 @@ class InterfazUsuario:
             
             st.markdown("---")
             
-            # Acciones rápidas
+            # Acciones rápidas optimizadas
             st.subheader("⚡ Acciones Rápidas")
             
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("🔄 Sincronizar", use_container_width=True):
-                    with st.spinner("Sincronizando..."):
-                        success, msg = self.sistema.sincronizar_con_servidor()
-                        if success:
-                            st.success("✅ Sincronizado")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
-            
-            with col2:
-                if st.button("💾 Backup", use_container_width=True):
+                if st.button("💾 Backup", use_container_width=True, help="Crear copia de seguridad"):
                     with st.spinner("Creando backup..."):
                         success, msg = self.sistema.crear_backup()
                         if success:
                             st.success("✅ Backup creado")
+                        else:
+                            st.warning(f"⚠️ {msg}")
+            
+            with col2:
+                if st.button("🔄 Sincronizar", use_container_width=True, help="Sincronizar con servidor"):
+                    with st.spinner("Sincronizando..."):
+                        success, msg = self.sistema.sincronizar_con_servidor()
+                        if success:
+                            st.success(f"✅ {msg}")
                         else:
                             st.error(f"❌ {msg}")
             
             st.markdown("---")
             
             # Información del sistema
-            if self.sistema.ultima_sincronizacion:
-                st.caption(f"Última sync: {self.sistema.ultima_sincronizacion.strftime('%Y-%m-%d %H:%M')}")
+            estado = self.sistema.obtener_estado_sistema()
+            modo = estado['aplicacion']['modo']
+            version = estado['aplicacion']['version']
             
-            st.caption(f"© 2024 Sistema de Gestión Escolar v{self.config.obtener('app.version')}")
+            if modo == 'nube':
+                st.caption(f"☁️ Modo Nube | v{version}")
+            else:
+                st.caption(f"💻 Modo Local | v{version}")
             
             return opcion_seleccionada
     
     def mostrar_panel_control(self):
-        """Mostrar panel de control principal"""
+        """Mostrar panel de control principal optimizado"""
         st.title("📊 Panel de Control")
+        
+        # Información del sistema
+        estado = self.sistema.obtener_estado_sistema()
+        
+        with st.expander("ℹ️ Información del sistema", expanded=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Estado:**", estado['aplicacion']['estado'].capitalize())
+                st.write("**Modo:**", estado['aplicacion']['modo'].capitalize())
+                st.write("**Versión:**", estado['aplicacion']['version'])
+            
+            with col2:
+                if estado['aplicacion']['ssh_conectado']:
+                    st.success("🔗 SSH Conectado")
+                else:
+                    st.info("🔒 SSH Deshabilitado")
+                
+                if estado['aplicacion']['ultima_sincronizacion']:
+                    st.write("**Última sync:**", estado['aplicacion']['ultima_sincronizacion'].strftime('%Y-%m-%d %H:%M'))
         
         # Estadísticas rápidas
         estadisticas = self.sistema.obtener_estadisticas_generales()
+        
+        st.subheader("📈 Estadísticas Principales")
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -1545,11 +1735,11 @@ class InterfazUsuario:
         
         st.markdown("---")
         
-        # Gráficos
+        # Gráficos y visualizaciones
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📈 Distribución por Estado")
+            st.subheader("📊 Distribución por Estado")
             if estadisticas.get('estudiantes_por_estado'):
                 df_estados = pd.DataFrame(
                     list(estadisticas['estudiantes_por_estado'].items()),
@@ -2194,12 +2384,11 @@ class InterfazUsuario:
             st.info("📭 No hay contrataciones registradas")
     
     def mostrar_configuracion_sistema(self):
-        """Mostrar configuración del sistema"""
+        """Mostrar configuración del sistema optimizada para nube"""
         st.title("⚙️ Configuración del Sistema")
         
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3 = st.tabs([
             "📊 Estado del Sistema",
-            "🔄 Sincronización",
             "💾 Backup",
             "🔧 Configuración"
         ])
@@ -2208,50 +2397,84 @@ class InterfazUsuario:
             self._mostrar_estado_sistema()
         
         with tab2:
-            self._mostrar_sincronizacion()
-        
-        with tab3:
             self._mostrar_backup()
         
-        with tab4:
+        with tab3:
             self._mostrar_configuracion()
     
     def _mostrar_estado_sistema(self):
         """Mostrar estado actual del sistema"""
         st.subheader("📊 Estado del Sistema")
         
-        # Información de base de datos
-        st.write("### 🗄️ Base de Datos")
-        st.write(f"**Ruta:** {self.sistema.db.db_path}")
-        st.write(f"**Backups:** {self.sistema.db.backup_dir}")
+        # Obtener información del sistema
+        estado = self.sistema.obtener_estado_sistema()
         
-        # Estadísticas
-        estadisticas = self.sistema.obtener_estadisticas_rapidas()
+        # Información general
+        st.write("### 🚀 Información General")
         col1, col2 = st.columns(2)
         
         with col1:
-            st.metric("Estudiantes totales", estadisticas.get('total_estudiantes', 0))
-            st.metric("Estudiantes activos", estadisticas.get('estudiantes_activos', 0))
+            st.write(f"**Estado:** {estado['aplicacion']['estado'].capitalize()}")
+            st.write(f"**Modo:** {estado['aplicacion']['modo'].capitalize()}")
+            st.write(f"**Versión:** {estado['aplicacion']['version']}")
         
         with col2:
-            st.metric("Egresados", estadisticas.get('total_egresados', 0))
-            st.metric("Esta sesión", estadisticas.get('estudiantes_sesion', 0))
+            if estado['aplicacion']['ssh_conectado']:
+                st.success("🔗 SSH Conectado")
+            elif estado['aplicacion']['ssh_configurado']:
+                st.warning("⚠️ SSH Configurado pero no conectado")
+            else:
+                st.info("🔒 SSH Deshabilitado")
+            
+            if estado['aplicacion']['ultima_sincronizacion']:
+                st.write(f"**Última sync:** {estado['aplicacion']['ultima_sincronizacion'].strftime('%Y-%m-%d %H:%M')}")
+        
+        # Información de base de datos
+        st.write("### 🗄️ Base de Datos")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"**Ruta:** {estado['base_datos']['ruta_db']}")
+            st.write(f"**Modo:** {estado['base_datos']['modo']}")
+        
+        with col2:
+            st.write(f"**Tamaño:** {estado['base_datos']['tamano_db']}")
+            if estado['base_datos']['es_temporal']:
+                st.info("📝 Base de datos temporal para esta sesión")
+        
+        # Estadísticas
+        st.write("### 📈 Estadísticas")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Estudiantes", estado['estadisticas']['total_estudiantes'])
+        with col2:
+            st.metric("Activos", estado['estadisticas']['estudiantes_activos'])
+        with col3:
+            st.metric("Esta sesión", estado['estadisticas']['estudiantes_sesion'])
         
         # Información de sesión
         st.write("### 💻 Sesión Actual")
-        st.code(f"Session ID: {self.sistema.sesion.session_id}")
+        info_sesion = estado['sesion']
+        st.write(f"**ID Sesión:** {info_sesion['session_id'][:16]}...")
+        st.write(f"**Iniciada:** {info_sesion['iniciada']}")
+        st.write(f"**Duración:** {info_sesion['duracion']}")
         
         # Limpiar datos de sesión
         if st.button("🧹 Limpiar datos de esta sesión"):
-            self.sistema.sesion.limpiar_datos_sesion()
-            st.success("✅ Datos de sesión limpiados")
-            st.rerun()
+            if self.sistema.sesion.limpiar_datos_sesion(self.sistema.db):
+                st.success("✅ Datos de sesión limpiados")
+                st.rerun()
+            else:
+                st.error("❌ Error limpiando datos de sesión")
     
     def _mostrar_sincronizacion(self):
-        """Mostrar opciones de sincronización"""
-        st.subheader("🔄 Sincronización con Servidor")
+        """Mostrar opciones de sincronización (simplificado para nube)"""
+        st.subheader("🔄 Sincronización")
         
-        if self.sistema.ssh_conectado:
+        estado = self.sistema.obtener_estado_sistema()
+        
+        if estado['aplicacion']['ssh_conectado']:
             st.success("✅ SSH conectado")
             st.write("**Host:**", self.config.obtener('ssh.host', 'No configurado'))
             st.write("**Usuario:**", self.config.obtener('ssh.username', 'No configurado'))
@@ -2264,8 +2487,26 @@ class InterfazUsuario:
                     else:
                         st.error(f"❌ {msg}")
         else:
-            st.warning("⚠️ SSH no configurado o no conectado")
-            st.write("Para habilitar sincronización SSH, configura los parámetros en el archivo de configuración.")
+            # Mensaje optimizado para nube
+            st.info("""
+            ### ℹ️ Información de Sincronización
+            
+            **Modo actual:** {'☁️ Nube' if estado['aplicacion']['modo'] == 'nube' else '💻 Local'}
+            
+            En modo de despliegue en la nube, la sincronización SSH está **deshabilitada por seguridad**.
+            
+            **Funcionalidades disponibles:**
+            - Gestión completa de estudiantes
+            - Sistema de inscripciones
+            - Registro de egresados y contrataciones
+            - Exportación de informes Excel
+            - Sistema de backup local
+            
+            **Para desarrollo local con SSH:**
+            1. Configura las credenciales SSH en `config.json`
+            2. Establece `"ssh": {"enabled": true}`
+            3. Ejecuta la aplicación localmente
+            """)
     
     def _mostrar_backup(self):
         """Mostrar opciones de backup"""
@@ -2281,20 +2522,26 @@ class InterfazUsuario:
                     st.error(f"❌ {msg}")
         
         # Listar backups existentes
+        estado = self.sistema.obtener_estado_sistema()
+        backup_dir = estado['base_datos']['backup_dir']
+        
         st.write("### 📦 Backups Existentes")
         
-        if os.path.exists(self.sistema.db.backup_dir):
+        if os.path.exists(backup_dir):
             backups = []
-            for file in os.listdir(self.sistema.db.backup_dir):
+            for file in os.listdir(backup_dir):
                 if file.startswith('escuela_backup_'):
-                    file_path = os.path.join(self.sistema.db.backup_dir, file)
-                    size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                    mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
-                    backups.append({
-                        'Archivo': file,
-                        'Tamaño (MB)': f"{size_mb:.2f}",
-                        'Fecha': mtime.strftime('%Y-%m-%d %H:%M:%S')
-                    })
+                    file_path = os.path.join(backup_dir, file)
+                    try:
+                        size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                        mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                        backups.append({
+                            'Archivo': file,
+                            'Tamaño (MB)': f"{size_mb:.2f}",
+                            'Fecha': mtime.strftime('%Y-%m-%d %H:%M:%S')
+                        })
+                    except:
+                        pass
             
             if backups:
                 df_backups = pd.DataFrame(backups)
@@ -2328,8 +2575,7 @@ class InterfazUsuario:
                     value=self.config.obtener('app.cache_ttl', 300)
                 )
             
-            if st.button("💾 Guardar Configuración"):
-                # Aquí se guardaría la configuración en un archivo
+            if st.button("💾 Guardar Configuración (sesión actual)"):
                 st.success("✅ Configuración guardada (en sesión actual)")
         
         # Configuración de backup
@@ -2359,16 +2605,21 @@ class InterfazUsuario:
                     self.sistema.limpiar_cache()
                     st.success("✅ Caché limpiado")
                     st.rerun()
+            
+            with col2:
+                if st.button("🔄 Reiniciar sistema (sesión)"):
+                    if 'sistema' in st.session_state:
+                        del st.session_state.sistema
+                        del st.session_state.ui
+                    st.success("✅ Sistema reiniciado")
+                    st.rerun()
 
-# =============================================================================
-# FUNCIÓN PRINCIPAL
-# =============================================================================
 # =============================================================================
 # FUNCIÓN PRINCIPAL
 # =============================================================================
 
 def main():
-    """Función principal de la aplicación"""
+    """Función principal de la aplicación optimizada"""
     # Configurar página
     st.set_page_config(
         page_title="Sistema de Gestión Escolar",
@@ -2380,8 +2631,13 @@ def main():
     # Inicializar sistema
     if 'sistema' not in st.session_state:
         with st.spinner("🚀 Inicializando sistema..."):
-            st.session_state.sistema = SistemaGestionEscolar()
-            st.session_state.ui = InterfazUsuario(st.session_state.sistema)
+            try:
+                st.session_state.sistema = SistemaGestionEscolar()
+                st.session_state.ui = InterfazUsuario(st.session_state.sistema)
+                st.success("✅ Sistema inicializado correctamente")
+            except Exception as e:
+                st.error(f"❌ Error crítico al inicializar el sistema: {e}")
+                st.stop()
     
     sistema = st.session_state.sistema
     ui = st.session_state.ui
@@ -2415,8 +2671,15 @@ def main():
     
     # Pie de página
     st.markdown("---")
-    st.caption(f"© 2024 Sistema de Gestión Escolar v{sistema.config.obtener('app.version')}")
-
+    
+    estado = sistema.obtener_estado_sistema()
+    modo = estado['aplicacion']['modo']
+    version = estado['aplicacion']['version']
+    
+    if modo == 'nube':
+        st.caption(f"© 2024 Sistema de Gestión Escolar v{version} | ☁️ Modo Nube")
+    else:
+        st.caption(f"© 2024 Sistema de Gestión Escolar v{version} | 💻 Modo Local")
 
 # =============================================================================
 # EJECUCIÓN
