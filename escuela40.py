@@ -1,8 +1,7 @@
 """
-escuela40.py - Sistema de Gestión de Escuela (Versión 4.0 Corregida)
-Sistema COMPLETO y CORREGIDO para despliegue en Streamlit Cloud
-Versión optimizada con manejo de conexión SSH y mensajes mejorados
-CONECTADO AL SERVIDOR REMOTO VIA SECRETS.TOML
+escuela30.py - Sistema de Gestión de Escuela (Refactorizado)
+Versión 3.0 con estado persistente independiente y conexión SSH compartida
+Sistema REMOTO exclusivo para gestión de estudiantes, inscritos, egresados, contratados
 """
 
 import streamlit as st
@@ -13,1057 +12,699 @@ import os
 import sys
 import json
 import time
-import hashlib
-import tempfile
+from datetime import datetime, timedelta
 import io
-import warnings
-from datetime import datetime, date, timedelta
+import hashlib
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Union
-from contextlib import contextmanager
-import shutil
-import gzip
-import paramiko
-import socket
-
+import warnings
 warnings.filterwarnings('ignore')
 
-# =============================================================================
-# CONFIGURACIÓN DEL SISTEMA - MODIFICADA PARA USAR SECRETS.TOML
-# =============================================================================
-
-class ConfiguracionSistema:
-    """Gestión centralizada de configuración con soporte para secrets.toml"""
-    
-    _instancia = None
-    
-    def __new__(cls):
-        if cls._instancia is None:
-            cls._instancia = super().__new__(cls)
-            cls._instancia._inicializar()
-        return cls._instancia
-    
-    def _inicializar(self):
-        """Inicializar configuración desde secrets.toml"""
-        # Configuración por defecto
-        self.config = {
-            'app': {
-                'title': '🏫 Sistema de Gestión Escolar',
-                'version': '4.0',
-                'icon': '🏫',
-                'page_size': 50,
-                'cache_ttl': 300,
-                'modo': 'nube'
-            },
-            'database': {
-                'name': 'escuela.db',
-                'backup_dir': 'backups',
-                'max_backups': 10,
-                'backup_enabled': True,
-                'temporal': True
-            },
-            'ssh': {
-                'enabled': False,  # Se sobreescribirá desde secrets.toml
-                'host': '',
-                'port': 22,
-                'username': '',
-                'password': '',
-                'timeout': 30,
-                'auto_connect': False
-            },
-            'paths': {
-                'uploads': 'uploads',
-                'logs': 'logs'
-            },
-            'estados': {
-                'estudiante': ['Activo', 'Inactivo', 'Egresado', 'Baja Temporal', 'Baja Definitiva'],
-                'nivel': ['Licenciatura', 'Maestría', 'Doctorado', 'Especialidad'],
-                'turno': ['Matutino', 'Vespertino', 'Nocturno', 'Mixto'],
-                'genero': ['M', 'F', 'Otro']
-            },
-            'mensajes': {
-                'modo_local': '💻 Aplicación funcionando en modo local',
-                'ssh_deshabilitado': 'SSH deshabilitado para seguridad en la nube',
-                'sesion_temporal': 'Datos guardados temporalmente para esta sesión'
-            }
-        }
-        
-        # Cargar configuración desde secrets.toml (PRIORIDAD MÁXIMA)
-        self._cargar_secrets_toml()
-    
-    def _cargar_secrets_toml(self):
-        """Cargar configuración desde secrets.toml de Streamlit Cloud"""
-        try:
-            # Método 1: Usar st.secrets (Streamlit Cloud)
-            if hasattr(st, 'secrets') and st.secrets:
-                secrets = st.secrets
-                
-                # Cargar configuración SSH desde secrets.toml
-                if 'smtp' in secrets:
-                    self.config['smtp'] = dict(secrets['smtp'])
-                
-                if 'ssh' in secrets:
-                    ssh_config = dict(secrets['ssh'])
-                    # Habilitar SSH si está configurado en secrets.toml
-                    if ssh_config.get('enabled', True):  # Por defecto True si existe
-                        self.config['ssh'].update({
-                            'enabled': True,
-                            'host': ssh_config.get('host', ''),
-                            'port': ssh_config.get('port', 22),
-                            'username': ssh_config.get('username', ''),
-                            'password': ssh_config.get('password', ''),
-                            'timeout': ssh_config.get('timeout', 30)
-                        })
-                        print("✅ SSH habilitado desde secrets.toml")
-                
-                if 'remote_paths' in secrets:
-                    self.config['remote_paths'] = dict(secrets['remote_paths'])
-                
-                if 'system' in secrets:
-                    system_config = dict(secrets['system'])
-                    self.config['system'] = {
-                        'supervisor_mode': system_config.get('supervisor_mode', False),
-                        'debug_mode': system_config.get('debug_mode', False)
-                    }
-                
-                print("✅ Configuración cargada desde st.secrets")
-                
-            # Método 2: Cargar desde archivo local secrets.toml
-            elif os.path.exists('secrets.toml'):
-                try:
-                    import tomli
-                    with open('secrets.toml', 'r', encoding='utf-8') as f:
-                        secrets = tomli.load(f)
-                    
-                    # Cargar configuración SSH
-                    if 'ssh' in secrets and secrets['ssh'].get('enabled', True):
-                        self.config['ssh'].update({
-                            'enabled': True,
-                            'host': secrets['ssh'].get('host', ''),
-                            'port': secrets['ssh'].get('port', 22),
-                            'username': secrets['ssh'].get('username', ''),
-                            'password': secrets['ssh'].get('password', ''),
-                            'timeout': secrets['ssh'].get('timeout', 30)
-                        })
-                        print("✅ SSH habilitado desde archivo secrets.toml local")
-                except ImportError:
-                    import tomllib
-                    with open('secrets.toml', 'r', encoding='utf-8') as f:
-                        secrets = tomllib.load(f)
-                    
-                    # Cargar configuración SSH
-                    if 'ssh' in secrets and secrets['ssh'].get('enabled', True):
-                        self.config['ssh'].update({
-                            'enabled': True,
-                            'host': secrets['ssh'].get('host', ''),
-                            'port': secrets['ssh'].get('port', 22),
-                            'username': secrets['ssh'].get('username', ''),
-                            'password': secrets['ssh'].get('password', ''),
-                            'timeout': secrets['ssh'].get('timeout', 30)
-                        })
-                        print("✅ SSH habilitado desde archivo secrets.toml local")
-            
-            # Método 3: Cargar desde variables de entorno (Streamlit Cloud)
-            else:
-                # Intentar cargar desde variables de entorno
-                ssh_host = os.environ.get('SSH_HOST')
-                ssh_user = os.environ.get('SSH_USERNAME')
-                ssh_pass = os.environ.get('SSH_PASSWORD')
-                
-                if ssh_host and ssh_user and ssh_pass:
-                    self.config['ssh'].update({
-                        'enabled': True,
-                        'host': ssh_host,
-                        'username': ssh_user,
-                        'password': ssh_pass,
-                        'port': int(os.environ.get('SSH_PORT', '3792')),
-                        'timeout': int(os.environ.get('SSH_TIMEOUT', '30'))
-                    })
-                    print("✅ SSH habilitado desde variables de entorno")
-                    
-        except Exception as e:
-            print(f"⚠️ Error cargando secrets.toml: {e}")
-            # Continuar con valores por defecto
-    
-    def obtener(self, clave: str, valor_defecto: Any = None) -> Any:
-        """Obtener valor de configuración"""
-        keys = clave.split('.')
-        current = self.config
-        
-        for key in keys:
-            if isinstance(current, dict) and key in current:
-                current = current[key]
-            else:
-                return valor_defecto
-        
-        return current
-    
-    def establecer(self, clave: str, valor: Any):
-        """Establecer valor de configuración"""
-        keys = clave.split('.')
-        current = self.config
-        
-        for i, key in enumerate(keys[:-1]):
-            if key not in current or not isinstance(current[key], dict):
-                current[key] = {}
-            current = current[key]
-        
-        current[keys[-1]] = valor
+# Importar módulos compartidos
+try:
+    from shared_config import (
+        SistemaLogging,
+        CargadorConfiguracion,
+        EstadoPersistenteBase,
+        GestorSSHCompartido,
+        UtilidadesCompartidas
+    )
+except ImportError as e:
+    st.error(f"❌ Error crítico: No se pudo importar módulos compartidos: {e}")
+    st.stop()
 
 # =============================================================================
-# GESTIÓN DE CONEXIÓN SSH MEJORADA
+# CONFIGURACIÓN Y LOGGING
 # =============================================================================
 
-class GestorSSH:
-    """Gestor mejorado de conexión SSH al servidor remoto"""
-    
-    def __init__(self, config: ConfiguracionSistema):
-        self.config = config
-        self.ssh_client = None
-        self.sftp = None
-        self.conectado = False
-        self.ultima_conexion = None
-        self.error_conexion = None
-        
-    def conectar(self) -> Tuple[bool, str]:
-        """Conectar al servidor SSH remoto"""
-        try:
-            # Verificar si SSH está habilitado
-            if not self.config.obtener('ssh.enabled', False):
-                return False, "SSH no está habilitado en la configuración"
-            
-            # Obtener credenciales
-            host = self.config.obtener('ssh.host', '')
-            username = self.config.obtener('ssh.username', '')
-            password = self.config.obtener('ssh.password', '')
-            port = self.config.obtener('ssh.port', 22)
-            timeout = self.config.obtener('ssh.timeout', 30)
-            
-            if not host or not username or not password:
-                return False, "Credenciales SSH incompletas"
-            
-            print(f"🔗 Intentando conexión SSH a {host}:{port} como {username}...")
-            
-            # Crear cliente SSH
-            self.ssh_client = paramiko.SSHClient()
-            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
-            # Configurar timeout
-            socket.setdefaulttimeout(timeout)
-            
-            # Conectar
-            self.ssh_client.connect(
-                hostname=host,
-                port=port,
-                username=username,
-                password=password,
-                timeout=timeout,
-                banner_timeout=timeout,
-                allow_agent=False,
-                look_for_keys=False
-            )
-            
-            # Abrir canal SFTP
-            self.sftp = self.ssh_client.open_sftp()
-            
-            self.conectado = True
-            self.ultima_conexion = datetime.now()
-            self.error_conexion = None
-            
-            print(f"✅ Conexión SSH establecida a {host}")
-            return True, f"Conexión exitosa a {host}"
-            
-        except socket.timeout:
-            error_msg = f"Timeout al conectar a {host}:{port}"
-            self.error_conexion = error_msg
-            return False, error_msg
-            
-        except paramiko.AuthenticationException:
-            error_msg = "Error de autenticación. Verifique usuario/contraseña."
-            self.error_conexion = error_msg
-            return False, error_msg
-            
-        except paramiko.SSHException as e:
-            error_msg = f"Error SSH: {str(e)}"
-            self.error_conexion = error_msg
-            return False, error_msg
-            
-        except Exception as e:
-            error_msg = f"Error inesperado: {str(e)}"
-            self.error_conexion = error_msg
-            return False, error_msg
-    
-    def desconectar(self):
-        """Desconectar del servidor SSH"""
-        try:
-            if self.sftp:
-                self.sftp.close()
-            if self.ssh_client:
-                self.ssh_client.close()
-        except:
-            pass
-        finally:
-            self.ssh_client = None
-            self.sftp = None
-            self.conectado = False
-    
-    def ejecutar_comando(self, comando: str) -> Tuple[bool, str]:
-        """Ejecutar comando remoto en el servidor"""
-        if not self.conectado or not self.ssh_client:
-            return False, "No conectado al servidor SSH"
-        
-        try:
-            stdin, stdout, stderr = self.ssh_client.exec_command(comando, timeout=30)
-            salida = stdout.read().decode('utf-8', errors='ignore')
-            error = stderr.read().decode('utf-8', errors='ignore')
-            
-            if error and not salida:
-                return False, f"Error: {error}"
-            
-            return True, salida if salida else "Comando ejecutado exitosamente"
-            
-        except Exception as e:
-            return False, f"Error ejecutando comando: {str(e)}"
-    
-    def subir_archivo(self, local_path: str, remote_path: str) -> Tuple[bool, str]:
-        """Subir archivo al servidor remoto"""
-        if not self.conectado or not self.sftp:
-            return False, "No conectado al servidor SSH"
-        
-        try:
-            self.sftp.put(local_path, remote_path)
-            return True, f"Archivo subido exitosamente a {remote_path}"
-        except Exception as e:
-            return False, f"Error subiendo archivo: {str(e)}"
-    
-    def descargar_archivo(self, remote_path: str, local_path: str) -> Tuple[bool, str]:
-        """Descargar archivo del servidor remoto"""
-        if not self.conectado or not self.sftp:
-            return False, "No conectado al servidor SSH"
-        
-        try:
-            self.sftp.get(remote_path, local_path)
-            return True, f"Archivo descargado exitosamente a {local_path}"
-        except Exception as e:
-            return False, f"Error descargando archivo: {str(e)}"
-    
-    def listar_directorio(self, remote_path: str) -> Tuple[bool, List[str]]:
-        """Listar contenido de directorio remoto"""
-        if not self.conectado or not self.sftp:
-            return False, []
-        
-        try:
-            archivos = self.sftp.listdir(remote_path)
-            return True, archivos
-        except:
-            return False, []
-    
-    def obtener_estado(self) -> Dict[str, Any]:
-        """Obtener estado de la conexión SSH"""
-        return {
-            'conectado': self.conectado,
-            'ultima_conexion': self.ultima_conexion,
-            'error_conexion': self.error_conexion,
-            'host': self.config.obtener('ssh.host', ''),
-            'username': self.config.obtener('ssh.username', ''),
-            'port': self.config.obtener('ssh.port', 22)
-        }
+# Obtener configuración para el sistema escuela
+config = CargadorConfiguracion.obtener_config_sistema('escuela')
+
+# Configurar logging
+logger = SistemaLogging.obtener_logger('escuela', config.get('log_file', 'escuela_detallado.log'))
+
+# Crear instancia de estado persistente
+estado_archivo = config.get('estado_file', 'estado_escuela.json')
+estado = EstadoPersistenteBase(estado_archivo, 'escuela')
+
+# Instancia global del gestor SSH
+gestor_ssh = GestorSSHCompartido()
 
 # =============================================================================
-# GESTIÓN DE BASE DE DATOS SIMPLIFICADA (SIN COLUMNA SINCRONIZADO)
+# CONSTANTES Y CONFIGURACIÓN
 # =============================================================================
 
-class GestorBaseDatos:
-    """Gestor de base de datos simplificado para compatibilidad"""
-    
-    def __init__(self, config: ConfiguracionSistema, gestor_ssh: GestorSSH = None):
-        self.config = config
-        self.gestor_ssh = gestor_ssh
-        self._inicializar_rutas()
-        self._inicializar_db()
-    
-    def _inicializar_rutas(self):
-        """Inicializar rutas locales"""
-        # Directorio base
-        base_dir = '.'
-        self.base_dir = base_dir
-        self.db_path = os.path.join(base_dir, self.config.obtener('database.name', 'escuela.db'))
-        self.backup_dir = os.path.join(base_dir, self.config.obtener('database.backup_dir', 'backups'))
-        
-        # Crear directorios locales
-        os.makedirs(self.backup_dir, exist_ok=True)
-        os.makedirs(os.path.join(base_dir, 'uploads'), exist_ok=True)
-        os.makedirs(os.path.join(base_dir, 'logs'), exist_ok=True)
-    
-    def _inicializar_db(self):
-        """Inicializar estructura de la base de datos (COMPATIBLE con versión anterior)"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Tabla de estudiantes (MANTENER estructura original)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS estudiantes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    matricula TEXT UNIQUE NOT NULL,
-                    nombre TEXT NOT NULL,
-                    apellido_paterno TEXT NOT NULL,
-                    apellido_materno TEXT,
-                    fecha_nacimiento TEXT,
-                    genero TEXT CHECK(genero IN ('M', 'F', 'Otro')),
-                    curp TEXT UNIQUE,
-                    rfc TEXT,
-                    telefono TEXT,
-                    email TEXT UNIQUE,
-                    direccion TEXT,
-                    ciudad TEXT,
-                    estado TEXT,
-                    codigo_postal TEXT,
-                    nivel_estudio TEXT CHECK(nivel_estudio IN ('Licenciatura', 'Maestría', 'Doctorado', 'Especialidad')),
-                    carrera TEXT,
-                    semestre INTEGER DEFAULT 1,
-                    turno TEXT CHECK(turno IN ('Matutino', 'Vespertino', 'Nocturno', 'Mixto')),
-                    fecha_ingreso TEXT,
-                    fecha_egreso TEXT,
-                    estado_estudiante TEXT DEFAULT 'Activo' CHECK(estado_estudiante IN ('Activo', 'Inactivo', 'Egresado', 'Baja Temporal', 'Baja Definitiva')),
-                    promedio REAL DEFAULT 0.0,
-                    creditos_aprobados INTEGER DEFAULT 0,
-                    creditos_totales INTEGER DEFAULT 0,
-                    foto_path TEXT,
-                    documentos_path TEXT,
-                    fecha_creacion TEXT DEFAULT CURRENT_TIMESTAMP,
-                    fecha_actualizacion TEXT DEFAULT CURRENT_TIMESTAMP,
-                    activo INTEGER DEFAULT 1,
-                    sesion_id TEXT,
-                    modo_nube INTEGER DEFAULT 1
-                )
-            ''')
-            
-            # Índices
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_matricula ON estudiantes(matricula)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_nombre ON estudiantes(nombre, apellido_paterno)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_estado ON estudiantes(estado_estudiante)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_est_email ON estudiantes(email)')
-            
-            # Tabla de inscritos
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS inscritos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    estudiante_id INTEGER NOT NULL,
-                    ciclo_escolar TEXT NOT NULL,
-                    semestre INTEGER,
-                    fecha_inscripcion TEXT DEFAULT CURRENT_TIMESTAMP,
-                    estatus TEXT DEFAULT 'Inscrito' CHECK(estatus IN ('Inscrito', 'Baja', 'Concluido')),
-                    promedio_ciclo REAL,
-                    creditos_inscritos INTEGER,
-                    creditos_aprobados INTEGER,
-                    observaciones TEXT,
-                    FOREIGN KEY (estudiante_id) REFERENCES estudiantes (id) ON DELETE CASCADE,
-                    UNIQUE(estudiante_id, ciclo_escolar)
-                )
-            ''')
-            
-            # Tabla de egresados
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS egresados (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    estudiante_id INTEGER UNIQUE NOT NULL,
-                    fecha_egreso TEXT NOT NULL,
-                    titulo_obtenido TEXT,
-                    promedio_final REAL,
-                    fecha_titulacion TEXT,
-                    numero_cedula TEXT UNIQUE,
-                    institucion_titulacion TEXT,
-                    empleo_actual TEXT,
-                    empresa_actual TEXT,
-                    salario_aproximado REAL,
-                    fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (estudiante_id) REFERENCES estudiantes (id) ON DELETE CASCADE
-                )
-            ''')
-            
-            # Tabla de contratados
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS contratados (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    egresado_id INTEGER NOT NULL,
-                    empresa TEXT NOT NULL,
-                    puesto TEXT,
-                    fecha_contratacion TEXT,
-                    salario_inicial REAL,
-                    salario_actual REAL,
-                    tipo_contrato TEXT,
-                    duracion_contrato TEXT,
-                    beneficios TEXT,
-                    fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP,
-                    activo INTEGER DEFAULT 1,
-                    FOREIGN KEY (egresado_id) REFERENCES egresados (id) ON DELETE CASCADE
-                )
-            ''')
-            
-            # Tabla de usuarios
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS usuarios (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    nombre_completo TEXT NOT NULL,
-                    email TEXT UNIQUE,
-                    rol TEXT CHECK(rol IN ('admin', 'supervisor', 'operador')),
-                    activo INTEGER DEFAULT 1,
-                    fecha_creacion TEXT DEFAULT CURRENT_TIMESTAMP,
-                    ultimo_acceso TEXT
-                )
-            ''')
-            
-            # Insertar usuario administrador por defecto
-            cursor.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'admin'")
-            if cursor.fetchone()[0] == 0:
-                password_hash = hashlib.sha256('Admin@Nube2024!'.encode()).hexdigest()
-                cursor.execute(
-                    """INSERT INTO usuarios 
-                       (username, password_hash, nombre_completo, email, rol) 
-                       VALUES (?, ?, ?, ?, ?)""",
-                    ('admin', password_hash, 'Administrador del Sistema', 
-                     'admin@escuela.edu.mx', 'admin')
-                )
-            
-            conn.commit()
-            print("✅ Base de datos inicializada correctamente")
-    
-    @contextmanager
-    def _get_connection(self):
-        """Context manager para conexiones a BD"""
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-    
-    def ejecutar_query(self, query: str, params: tuple = None) -> List[Dict[str, Any]]:
-        """Ejecutar consulta y retornar resultados como diccionarios"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            
-            if cursor.description:
-                columns = [description[0] for description in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
-            return []
-    
-    def ejecutar_commit(self, query: str, params: tuple = None) -> int:
-        """Ejecutar consulta con commit y retornar última fila insertada"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            
-            conn.commit()
-            return cursor.lastrowid
-    
-    def obtener_uno(self, query: str, params: tuple = None) -> Optional[Dict[str, Any]]:
-        """Obtener un solo registro"""
-        resultados = self.ejecutar_query(query, params)
-        return resultados[0] if resultados else None
-    
-    def descargar_db_remota(self) -> Tuple[bool, str]:
-        """Descargar base de datos remota si hay conexión SSH"""
-        if not self.gestor_ssh or not self.gestor_ssh.conectado:
-            return False, "No conectado al servidor SSH"
-        
-        try:
-            # Obtener ruta remota desde configuración
-            ruta_remota = self.config.obtener('remote_paths.escuela_db', '')
-            if not ruta_remota:
-                return False, "Ruta remota no configurada"
-            
-            # Crear backup de la base de datos local actual
-            backup_path = f"{self.db_path}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            if os.path.exists(self.db_path):
-                shutil.copy2(self.db_path, backup_path)
-            
-            # Descargar base de datos remota
-            success, msg = self.gestor_ssh.descargar_archivo(ruta_remota, self.db_path)
-            
-            if success:
-                # Verificar que el archivo descargado sea una base de datos válida
-                try:
-                    test_conn = sqlite3.connect(self.db_path)
-                    test_conn.execute("SELECT 1 FROM sqlite_master LIMIT 1")
-                    test_conn.close()
-                    return True, "Base de datos remota descargada exitosamente"
-                except:
-                    # Restaurar backup si la descarga falló
-                    if os.path.exists(backup_path):
-                        shutil.copy2(backup_path, self.db_path)
-                    return False, "Archivo descargado no es una base de datos SQLite válida"
-            else:
-                # Restaurar backup si la descarga falló
-                if os.path.exists(backup_path):
-                    shutil.copy2(backup_path, self.db_path)
-                return False, msg
-                
-        except Exception as e:
-            return False, f"Error descargando base de datos remota: {str(e)}"
-    
-    def subir_db_local(self) -> Tuple[bool, str]:
-        """Subir base de datos local al servidor remoto"""
-        if not self.gestor_ssh or not self.gestor_ssh.conectado:
-            return False, "No conectado al servidor SSH"
-        
-        try:
-            # Obtener ruta remota desde configuración
-            ruta_remota = self.config.obtener('remote_paths.escuela_db', '')
-            if not ruta_remota:
-                return False, "Ruta remota no configurada"
-            
-            # Subir base de datos local
-            success, msg = self.gestor_ssh.subir_archivo(self.db_path, ruta_remota)
-            
-            if success:
-                return True, "Base de datos local subida exitosamente al servidor"
-            else:
-                return False, msg
-                
-        except Exception as e:
-            return False, f"Error subiendo base de datos: {str(e)}"
+# Configuración de la aplicación
+APP_TITLE = "🏫 Sistema de Gestión Escolar"
+APP_ICON = "🏫"
+PAGE_SIZE = config.get('page_size', 50)
+CACHE_TTL = config.get('cache_ttl', 300)
+
+# Estados de los estudiantes
+ESTADOS_ESTUDIANTE = ['Activo', 'Inactivo', 'Egresado', 'Baja Temporal', 'Baja Definitiva']
+NIVELES_ESTUDIO = ['Licenciatura', 'Maestría', 'Doctorado', 'Especialidad']
+TURNOS = ['Matutino', 'Vespertino', 'Nocturno', 'Mixto']
 
 # =============================================================================
-# VALIDACIÓN DE DATOS (MANTENER ORIGINAL)
-# =============================================================================
-
-class ValidadorDatos:
-    """Validador de datos del sistema"""
-    
-    @staticmethod
-    def validar_email(email: str) -> bool:
-        """Validar formato de email"""
-        import re
-        if not email:
-            return True  # Email opcional
-        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        return bool(re.match(pattern, email))
-    
-    @staticmethod
-    def validar_matricula(matricula: str) -> bool:
-        """Validar formato de matrícula"""
-        if not matricula:
-            return False
-        # Matrícula debe tener al menos 3 caracteres y algún número
-        return len(matricula) >= 3 and any(char.isdigit() for char in matricula)
-    
-    @staticmethod
-    def validar_curp(curp: str) -> bool:
-        """Validar formato de CURP"""
-        if not curp:
-            return True  # CURP opcional
-        # CURP debe tener 18 caracteres
-        return len(curp) == 18 and curp.isalnum()
-    
-    @staticmethod
-    def validar_telefono(telefono: str) -> bool:
-        """Validar formato de teléfono"""
-        if not telefono:
-            return True  # Teléfono opcional
-        # Teléfono debe tener 10 dígitos
-        return telefono.isdigit() and len(telefono) == 10
-    
-    @staticmethod
-    def validar_fecha(fecha_str: str) -> bool:
-        """Validar formato de fecha (YYYY-MM-DD)"""
-        if not fecha_str:
-            return True
-        try:
-            fecha = datetime.strptime(fecha_str, '%Y-%m-%d')
-            # Verificar que no sea fecha futura (excepto para fechas de ingreso/egreso)
-            if fecha > datetime.now() and not fecha_str.startswith('20'):  # Permitir fechas futuras razonables
-                return False
-            return True
-        except ValueError:
-            return False
-    
-    def validar_estudiante(self, datos: Dict[str, Any]) -> List[str]:
-        """Validar datos de estudiante"""
-        errores = []
-        
-        # Validar matrícula
-        if not datos.get('matricula'):
-            errores.append("La matrícula es obligatoria")
-        elif not self.validar_matricula(datos['matricula']):
-            errores.append("Formato de matrícula inválido (mínimo 3 caracteres con números)")
-        
-        # Validar nombre
-        if not datos.get('nombre'):
-            errores.append("El nombre es obligatorio")
-        elif len(datos['nombre'].strip()) < 2:
-            errores.append("El nombre debe tener al menos 2 caracteres")
-        
-        # Validar apellido paterno
-        if not datos.get('apellido_paterno'):
-            errores.append("El apellido paterno es obligatorio")
-        elif len(datos['apellido_paterno'].strip()) < 2:
-            errores.append("El apellido paterno debe tener al menos 2 caracteres")
-        
-        # Validar email
-        if datos.get('email') and not self.validar_email(datos['email']):
-            errores.append("Formato de email inválido")
-        
-        # Validar CURP
-        if datos.get('curp') and not self.validar_curp(datos['curp']):
-            errores.append("El CURP debe tener 18 caracteres alfanuméricos")
-        
-        # Validar teléfono
-        if datos.get('telefono') and not self.validar_telefono(datos['telefono']):
-            errores.append("El teléfono debe tener 10 dígitos")
-        
-        # Validar fecha de nacimiento
-        if datos.get('fecha_nacimiento'):
-            if not self.validar_fecha(datos['fecha_nacimiento']):
-                errores.append("Formato de fecha de nacimiento inválido (usar YYYY-MM-DD)")
-            else:
-                try:
-                    fecha_nac = datetime.strptime(datos['fecha_nacimiento'], '%Y-%m-%d')
-                    if fecha_nac > datetime.now():
-                        errores.append("La fecha de nacimiento no puede ser futura")
-                except:
-                    pass
-        
-        return errores
-
-# =============================================================================
-# GESTIÓN DE SESIONES (MANTENER ORIGINAL)
-# =============================================================================
-
-class GestorSesion:
-    """Gestor de sesiones optimizado para despliegue multi-usuario"""
-    
-    def __init__(self):
-        if 'session_id' not in st.session_state:
-            # Generar ID único para esta sesión
-            import secrets
-            st.session_state.session_id = f"sesion_{secrets.token_hex(8)}"
-        
-        if 'sesion_iniciada' not in st.session_state:
-            st.session_state.sesion_iniciada = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        self.session_id = st.session_state.session_id
-        self.sesion_iniciada = st.session_state.sesion_iniciada
-    
-    def obtener_info_sesion(self) -> Dict[str, Any]:
-        """Obtener información de la sesión actual"""
-        return {
-            'session_id': self.session_id,
-            'iniciada': self.sesion_iniciada,
-            'duracion': self._calcular_duracion_sesion()
-        }
-    
-    def _calcular_duracion_sesion(self) -> str:
-        """Calcular duración de la sesión actual"""
-        try:
-            inicio = datetime.strptime(self.sesion_iniciada, '%Y-%m-%d %H:%M:%S')
-            ahora = datetime.now()
-            diferencia = ahora - inicio
-            
-            horas = diferencia.seconds // 3600
-            minutos = (diferencia.seconds % 3600) // 60
-            segundos = diferencia.seconds % 60
-            
-            if horas > 0:
-                return f"{horas}h {minutos}m {segundos}s"
-            elif minutos > 0:
-                return f"{minutos}m {segundos}s"
-            else:
-                return f"{segundos}s"
-        except:
-            return "N/A"
-
-# =============================================================================
-# SISTEMA PRINCIPAL CON CORRECCIÓN DE ERROR
+# CLASE PRINCIPAL DEL SISTEMA
 # =============================================================================
 
 class SistemaGestionEscolar:
-    """Sistema principal con conexión SSH al servidor remoto"""
+    """Clase principal del sistema de gestión escolar"""
     
     def __init__(self):
-        # Inicializar componentes
-        self.config = ConfiguracionSistema()
-        self.gestor_ssh = GestorSSH(self.config)
-        self.db = GestorBaseDatos(self.config, self.gestor_ssh)
-        self.validador = ValidadorDatos()
-        self.sesion = GestorSesion()
+        self.config = config
+        self.logger = logger
+        self.estado = estado
+        self.gestor_ssh = gestor_ssh
+        self.util = UtilidadesCompartidas()
         
-        # Cache para datos frecuentes
-        self._cache_estadisticas = None
-        self._cache_timestamp = None
-        self._cache_ttl = self.config.obtener('app.cache_ttl', 300)
+        # Configuración de rutas
+        self.rutas = config.get('remote_paths', {})
+        self.ssh_config = config.get('ssh', {})
         
-        # Estado del sistema
-        self.modo_operacion = self.config.obtener('app.modo', 'nube')
-        self.ultima_sincronizacion = None
-        self.estado_aplicacion = 'inicializado'
+        # Estado interno
+        self.conexion_local = None
+        self.db_local_path = None
+        self.cache_data = {}
+        self.cache_timestamps = {}
         
-        # Inicializar sistema
+        # Inicializar
         self._inicializar_sistema()
     
     def _inicializar_sistema(self):
         """Inicializar el sistema"""
-        # Crear directorios necesarios
-        for dir_path in ['uploads/estudiantes', 'uploads/documentos', 'logs']:
-            os.makedirs(dir_path, exist_ok=True)
+        self.logger.info("🚀 Inicializando Sistema de Gestión Escolar")
         
-        print("✅ Sistema inicializado correctamente")
+        # Verificar si ya está inicializado
+        if not self.estado.esta_inicializada():
+            self._inicializar_base_datos()
+        else:
+            self.logger.info(f"✅ Sistema ya inicializado el {self.estado.obtener_fecha_inicializacion()}")
+        
+        # Sincronizar si está configurado
+        if self.config.get('sync_on_start', True):
+            self.sincronizar_con_servidor()
     
-    # =========================================================================
-    # MÉTODOS PARA ESTUDIANTES (MANTENER ORIGINAL)
-    # =========================================================================
+    def _inicializar_base_datos(self):
+        """Inicializar la base de datos local"""
+        try:
+            self.logger.info("🔄 Inicializando base de datos local...")
+            
+            # Crear conexión a base de datos local temporal
+            self.db_local_path = "temp_escuela.db"
+            
+            if os.path.exists(self.db_local_path):
+                os.remove(self.db_local_path)
+            
+            self.conexion_local = sqlite3.connect(self.db_local_path, check_same_thread=False)
+            self.conexion_local.row_factory = sqlite3.Row
+            
+            # Crear estructura de tablas
+            self._crear_estructura_bd()
+            
+            # Marcar como inicializada
+            self.estado.marcar_db_inicializada()
+            self.logger.info("✅ Base de datos inicializada exitosamente")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error inicializando base de datos: {e}")
+            st.error(f"Error crítico al inicializar la base de datos: {str(e)}")
     
-    def obtener_estudiantes(
-        self, 
-        filtro_estado: str = None,
-        filtro_nivel: str = None,
-        busqueda: str = None,
-        limite: int = None,
-        offset: int = 0
-    ) -> List[Dict[str, Any]]:
+    def _crear_estructura_bd(self):
+        """Crear estructura completa de la base de datos"""
+        cursor = self.conexion_local.cursor()
+        
+        # Tabla de estudiantes
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS estudiantes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                matricula TEXT UNIQUE NOT NULL,
+                nombre TEXT NOT NULL,
+                apellido_paterno TEXT NOT NULL,
+                apellido_materno TEXT,
+                fecha_nacimiento TEXT,
+                genero TEXT CHECK(genero IN ('M', 'F', 'Otro')),
+                curp TEXT UNIQUE,
+                rfc TEXT,
+                telefono TEXT,
+                email TEXT,
+                direccion TEXT,
+                ciudad TEXT,
+                estado TEXT,
+                codigo_postal TEXT,
+                nivel_estudio TEXT,
+                carrera TEXT,
+                semestre INTEGER,
+                turno TEXT,
+                fecha_ingreso TEXT,
+                fecha_egreso TEXT,
+                estado_estudiante TEXT DEFAULT 'Activo',
+                promedio REAL,
+                creditos_aprobados INTEGER,
+                creditos_totales INTEGER,
+                foto_path TEXT,
+                documentos_path TEXT,
+                fecha_creacion TEXT DEFAULT CURRENT_TIMESTAMP,
+                fecha_actualizacion TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Tabla de inscritos (matriculados por ciclo)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS inscritos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                estudiante_id INTEGER NOT NULL,
+                ciclo_escolar TEXT NOT NULL,
+                semestre INTEGER,
+                fecha_inscripcion TEXT DEFAULT CURRENT_TIMESTAMP,
+                estatus TEXT DEFAULT 'Inscrito',
+                promedio_ciclo REAL,
+                creditos_inscritos INTEGER,
+                observaciones TEXT,
+                FOREIGN KEY (estudiante_id) REFERENCES estudiantes (id),
+                UNIQUE(estudiante_id, ciclo_escolar)
+            )
+        ''')
+        
+        # Tabla de egresados
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS egresados (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                estudiante_id INTEGER UNIQUE NOT NULL,
+                fecha_egreso TEXT NOT NULL,
+                titulo_obtenido TEXT,
+                promedio_final REAL,
+                fecha_titulacion TEXT,
+                numero_cedula TEXT,
+                institucion_titulacion TEXT,
+                empleo_actual TEXT,
+                empresa_actual TEXT,
+                salario_aproximado REAL,
+                fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (estudiante_id) REFERENCES estudiantes (id)
+            )
+        ''')
+        
+        # Tabla de contratados (egresados con empleo)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS contratados (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                egresado_id INTEGER NOT NULL,
+                empresa TEXT NOT NULL,
+                puesto TEXT,
+                fecha_contratacion TEXT,
+                salario_inicial REAL,
+                salario_actual REAL,
+                tipo_contrato TEXT,
+                duracion_contrato TEXT,
+                beneficios TEXT,
+                fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (egresado_id) REFERENCES egresados (id)
+            )
+        ''')
+        
+        # Tabla de usuarios del sistema
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                nombre_completo TEXT NOT NULL,
+                email TEXT UNIQUE,
+                rol TEXT CHECK(rol IN ('admin', 'supervisor', 'operador')),
+                activo INTEGER DEFAULT 1,
+                fecha_creacion TEXT DEFAULT CURRENT_TIMESTAMP,
+                ultimo_acceso TEXT
+            )
+        ''')
+        
+        # Tabla de auditoría
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS auditoria (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usuario_id INTEGER,
+                accion TEXT NOT NULL,
+                tabla_afectada TEXT,
+                registro_id INTEGER,
+                detalles TEXT,
+                fecha_hora TEXT DEFAULT CURRENT_TIMESTAMP,
+                ip_address TEXT
+            )
+        ''')
+        
+        # Tabla de configuraciones del sistema
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS configuraciones (
+                clave TEXT PRIMARY KEY,
+                valor TEXT,
+                descripcion TEXT,
+                fecha_actualizacion TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Insertar usuario administrador por defecto si no existe
+        cursor.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'admin'")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                "INSERT INTO usuarios (username, password_hash, nombre_completo, email, rol) VALUES (?, ?, ?, ?, ?)",
+                ('admin', hashlib.sha256('admin123'.encode()).hexdigest(), 'Administrador del Sistema', 'admin@escuela.edu.mx', 'admin')
+            )
+        
+        self.conexion_local.commit()
+        self.logger.info("✅ Estructura de base de datos creada")
+    
+    # =============================================================================
+    # OPERACIONES DE SINCRONIZACIÓN CON SERVIDOR
+    # =============================================================================
+    
+    def sincronizar_con_servidor(self, forzar: bool = False):
+        """Sincronizar datos con el servidor remoto"""
+        try:
+            if not self.ssh_config.get('enabled', True):
+                self.logger.warning("SSH deshabilitado, omitiendo sincronización")
+                return False
+            
+            self.logger.info("🔄 Sincronizando con servidor remoto...")
+            
+            # Conectar al servidor
+            if not self.gestor_ssh.conectar():
+                self.logger.error("❌ No se pudo conectar al servidor SSH")
+                return False
+            
+            sftp = self.gestor_ssh.obtener_sftp()
+            if not sftp:
+                self.logger.error("❌ No se pudo obtener cliente SFTP")
+                return False
+            
+            # Descargar base de datos principal
+            db_remota = self.rutas.get('escuela_db')
+            if db_remota:
+                self._descargar_base_datos(sftp, db_remota, self.db_local_path)
+            
+            # Descargar base de datos de inscritos
+            db_inscritos_remota = self.rutas.get('inscritos_db')
+            if db_inscritos_remota:
+                self._descargar_base_datos(sftp, db_inscritos_remota, 'temp_inscritos.db')
+            
+            # Sincronizar archivos de uploads
+            self._sincronizar_uploads(sftp)
+            
+            # Actualizar estado
+            self.estado.marcar_sincronizacion()
+            self.estado.set_ssh_conectado(True)
+            
+            # Limpiar cache
+            self.cache_data.clear()
+            self.cache_timestamps.clear()
+            
+            self.logger.info("✅ Sincronización completada exitosamente")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error en sincronización: {e}")
+            self.estado.set_ssh_conectado(False, str(e))
+            return False
+    
+    def _descargar_base_datos(self, sftp, ruta_remota: str, ruta_local: str):
+        """Descargar base de datos desde servidor remoto"""
+        try:
+            self.logger.info(f"📥 Descargando {ruta_remota}...")
+            
+            if os.path.exists(ruta_local):
+                backup_path = f"{ruta_local}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                os.rename(ruta_local, backup_path)
+                self.logger.debug(f"Backup creado: {backup_path}")
+            
+            sftp.get(ruta_remota, ruta_local)
+            self.logger.info(f"✅ Base de datos descargada: {ruta_local}")
+            
+        except FileNotFoundError:
+            self.logger.warning(f"⚠️ Archivo remoto no encontrado: {ruta_remota}")
+        except Exception as e:
+            self.logger.error(f"❌ Error descargando base de datos: {e}")
+            raise
+    
+    def _sincronizar_uploads(self, sftp):
+        """Sincronizar archivos de uploads"""
+        try:
+            # Crear directorios locales si no existen
+            directorios_uploads = [
+                'uploads/inscritos',
+                'uploads/estudiantes',
+                'uploads/egresados',
+                'uploads/contratados'
+            ]
+            
+            for dir_path in directorios_uploads:
+                self.util.crear_directorio_si_no_existe(dir_path)
+            
+            self.logger.info("✅ Directorios de uploads preparados")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error sincronizando uploads: {e}")
+    
+    def subir_cambios_al_servidor(self):
+        """Subir cambios locales al servidor remoto"""
+        try:
+            self.logger.info("🔼 Subiendo cambios al servidor...")
+            
+            if not self.gestor_ssh.conectar():
+                self.logger.error("❌ No se pudo conectar al servidor SSH")
+                return False
+            
+            sftp = self.gestor_ssh.obtener_sftp()
+            if not sftp:
+                self.logger.error("❌ No se pudo obtener cliente SFTP")
+                return False
+            
+            # Subir base de datos principal
+            db_remota = self.rutas.get('escuela_db')
+            if db_remota and os.path.exists(self.db_local_path):
+                sftp.put(self.db_local_path, db_remota)
+                self.logger.info(f"✅ Base de datos subida: {db_remota}")
+            
+            # Subir base de datos de inscritos si existe
+            db_inscritos_local = 'temp_inscritos.db'
+            db_inscritos_remota = self.rutas.get('inscritos_db')
+            if db_inscritos_remota and os.path.exists(db_inscritos_local):
+                sftp.put(db_inscritos_local, db_inscritos_remota)
+                self.logger.info(f"✅ Base de datos de inscritos subida")
+            
+            self.logger.info("✅ Cambios subidos exitosamente")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error subiendo cambios: {e}")
+            return False
+    
+    # =============================================================================
+    # OPERACIONES DE BACKUP
+    # =============================================================================
+    
+    def crear_backup(self):
+        """Crear backup de la base de datos"""
+        try:
+            if not self.config.get('backup', {}).get('enabled', True):
+                self.logger.info("Backup deshabilitado en configuración")
+                return True
+            
+            backup_dir = self.config.get('backup_dir', 'backups_escuela')
+            self.util.crear_directorio_si_no_existe(backup_dir)
+            
+            # Verificar espacio en disco
+            espacio_ok, espacio_mb = self.util.verificar_espacio_disco(
+                backup_dir,
+                self.config.get('backup', {}).get('min_disk_space_mb', 100)
+            )
+            
+            if not espacio_ok:
+                self.logger.warning(f"⚠️ Espacio insuficiente para backup: {espacio_mb:.2f} MB disponibles")
+                return False
+            
+            timestamp = self.util.generar_timestamp()
+            backup_file = os.path.join(backup_dir, f"escuela_backup_{timestamp}.db")
+            
+            # Crear copia de la base de datos
+            import shutil
+            shutil.copy2(self.db_local_path, backup_file)
+            
+            # Comprimir si es grande
+            if os.path.getsize(backup_file) > 10 * 1024 * 1024:  # > 10MB
+                import gzip
+                with open(backup_file, 'rb') as f_in:
+                    with gzip.open(f"{backup_file}.gz", 'wb') as f_out:
+                        f_out.writelines(f_in)
+                os.remove(backup_file)
+                backup_file = f"{backup_file}.gz"
+            
+            # Limpiar backups antiguos
+            self._limpiar_backups_antiguos(backup_dir)
+            
+            self.estado.registrar_backup()
+            self.logger.info(f"✅ Backup creado: {backup_file}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error creando backup: {e}")
+            return False
+    
+    def _limpiar_backups_antiguos(self, backup_dir: str):
+        """Limpiar backups antiguos manteniendo solo los más recientes"""
+        try:
+            max_backups = self.config.get('backup', {}).get('max_backups', 10)
+            
+            if not os.path.exists(backup_dir):
+                return
+            
+            backups = []
+            for file in os.listdir(backup_dir):
+                if file.startswith('escuela_backup_'):
+                    file_path = os.path.join(backup_dir, file)
+                    backups.append((file_path, os.path.getmtime(file_path)))
+            
+            # Ordenar por fecha de modificación (más antiguos primero)
+            backups.sort(key=lambda x: x[1])
+            
+            # Eliminar los más antiguos si excedemos el máximo
+            while len(backups) > max_backups:
+                old_backup = backups.pop(0)
+                try:
+                    os.remove(old_backup[0])
+                    self.logger.debug(f"Backup antiguo eliminado: {old_backup[0]}")
+                except:
+                    pass
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error limpiando backups antiguos: {e}")
+    
+    # =============================================================================
+    # OPERACIONES CRUD PARA ESTUDIANTES
+    # =============================================================================
+    
+    @st.cache_data(ttl=CACHE_TTL)
+    def obtener_estudiantes(_self, filtro_estado: str = None, busqueda: str = None, limite: int = PAGE_SIZE):
         """Obtener lista de estudiantes con filtros"""
         try:
-            if limite is None:
-                limite = self.config.obtener('app.page_size', 50)
-            
-            query = "SELECT * FROM estudiantes WHERE activo = 1"
+            query = "SELECT * FROM estudiantes WHERE 1=1"
             params = []
             
             if filtro_estado and filtro_estado != 'Todos':
                 query += " AND estado_estudiante = ?"
                 params.append(filtro_estado)
             
-            if filtro_nivel and filtro_nivel != 'Todos':
-                query += " AND nivel_estudio = ?"
-                params.append(filtro_nivel)
-            
             if busqueda:
-                query += """ AND (
-                    matricula LIKE ? OR 
-                    nombre LIKE ? OR 
-                    apellido_paterno LIKE ? OR 
-                    email LIKE ? OR
-                    curp LIKE ?
-                )"""
+                query += " AND (matricula LIKE ? OR nombre LIKE ? OR apellido_paterno LIKE ? OR email LIKE ?)"
                 search_term = f"%{busqueda}%"
-                params.extend([search_term] * 5)
+                params.extend([search_term] * 4)
             
-            query += " ORDER BY fecha_ingreso DESC LIMIT ? OFFSET ?"
-            params.extend([limite, offset])
+            query += " ORDER BY fecha_ingreso DESC LIMIT ?"
+            params.append(limite)
             
-            return self.db.ejecutar_query(query, tuple(params))
+            cursor = _self.conexion_local.cursor()
+            cursor.execute(query, params)
+            estudiantes = cursor.fetchall()
+            
+            return estudiantes
             
         except Exception as e:
-            st.error(f"❌ Error obteniendo estudiantes: {e}")
+            _self.logger.error(f"❌ Error obteniendo estudiantes: {e}")
             return []
     
-    def obtener_estudiante_por_id(self, estudiante_id: int) -> Optional[Dict[str, Any]]:
+    def obtener_estudiante_por_id(self, estudiante_id: int):
         """Obtener estudiante por ID"""
-        query = "SELECT * FROM estudiantes WHERE id = ? AND activo = 1"
-        return self.db.obtener_uno(query, (estudiante_id,))
-    
-    def buscar_estudiante(self, criterio: str, valor: str) -> List[Dict[str, Any]]:
-        """Buscar estudiante por criterio"""
-        criterios_validos = {
-            'matricula': 'matricula',
-            'nombre': 'nombre',
-            'curp': 'curp',
-            'email': 'email'
-        }
-        
-        if criterio not in criterios_validos:
-            return []
-        
-        campo = criterios_validos[criterio]
-        query = f"SELECT * FROM estudiantes WHERE {campo} LIKE ? AND activo = 1"
-        return self.db.ejecutar_query(query, (f"%{valor}%",))
-    
-    def crear_estudiante(self, datos: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
-        """Crear nuevo estudiante"""
         try:
-            # Validar datos
-            errores = self.validador.validar_estudiante(datos)
-            if errores:
-                return False, "; ".join(errores), None
+            cursor = self.conexion_local.cursor()
+            cursor.execute("SELECT * FROM estudiantes WHERE id = ?", (estudiante_id,))
+            return cursor.fetchone()
+        except Exception as e:
+            self.logger.error(f"❌ Error obteniendo estudiante {estudiante_id}: {e}")
+            return None
+    
+    def buscar_estudiante(self, criterio: str, valor: str):
+        """Buscar estudiante por cualquier criterio"""
+        try:
+            criterios_validos = ['matricula', 'nombre', 'curp', 'email']
+            if criterio not in criterios_validos:
+                return None
             
-            # Verificar matrícula única
-            if datos.get('matricula'):
-                existe = self.db.obtener_uno(
-                    "SELECT id FROM estudiantes WHERE matricula = ?",
-                    (datos['matricula'],)
-                )
-                if existe:
-                    return False, "La matrícula ya existe", None
+            cursor = self.conexion_local.cursor()
+            query = f"SELECT * FROM estudiantes WHERE {criterio} LIKE ?"
+            cursor.execute(query, (f"%{valor}%",))
+            return cursor.fetchall()
             
-            # Verificar email único
-            if datos.get('email'):
-                existe = self.db.obtener_uno(
-                    "SELECT id FROM estudiantes WHERE email = ?",
-                    (datos['email'],)
-                )
-                if existe:
-                    return False, "El email ya está registrado", None
+        except Exception as e:
+            self.logger.error(f"❌ Error buscando estudiante: {e}")
+            return []
+    
+    def agregar_estudiante(self, datos_estudiante: dict):
+        """Agregar nuevo estudiante"""
+        try:
+            cursor = self.conexion_local.cursor()
             
-            # Preparar datos para inserción
-            campos = ['sesion_id']  # Añadir ID de sesión
-            placeholders = ['?']
-            valores = [self.sesion.session_id]
+            # Preparar campos y valores
+            campos = []
+            placeholders = []
+            valores = []
             
-            for campo, valor in datos.items():
+            for campo, valor in datos_estudiante.items():
                 if valor is not None and valor != '':
                     campos.append(campo)
                     placeholders.append('?')
                     valores.append(valor)
             
-            # Añadir fechas automáticas
+            # Añadir fechas de creación y actualización
             campos.append('fecha_creacion')
+            campos.append('fecha_actualizacion')
+            placeholders.append('CURRENT_TIMESTAMP')
             placeholders.append('CURRENT_TIMESTAMP')
             
-            # Añadir modo nube
-            campos.append('modo_nube')
-            placeholders.append('1')
-            
-            # Ejecutar inserción
             query = f"INSERT INTO estudiantes ({', '.join(campos)}) VALUES ({', '.join(placeholders)})"
-            estudiante_id = self.db.ejecutar_commit(query, tuple(valores))
             
-            # Limpiar cache
-            self._cache_estadisticas = None
+            cursor.execute(query, valores)
+            self.conexion_local.commit()
             
-            return True, "Estudiante creado exitosamente", estudiante_id
+            estudiante_id = cursor.lastrowid
+            self.logger.info(f"✅ Estudiante agregado: ID {estudiante_id}")
             
+            # Registrar en auditoría
+            self._registrar_auditoria('INSERT', 'estudiantes', estudiante_id, 
+                                     f"Estudiante creado: {datos_estudiante.get('matricula', 'N/A')}")
+            
+            return estudiante_id
+            
+        except sqlite3.IntegrityError as e:
+            self.logger.error(f"❌ Error de integridad al agregar estudiante: {e}")
+            if "matricula" in str(e):
+                raise ValueError("La matrícula ya existe")
+            elif "curp" in str(e):
+                raise ValueError("El CURP ya existe")
+            else:
+                raise ValueError("Error de duplicación de datos")
         except Exception as e:
-            return False, f"Error al crear estudiante: {str(e)}", None
+            self.logger.error(f"❌ Error agregando estudiante: {e}")
+            raise
     
-    def actualizar_estudiante(self, estudiante_id: int, datos: Dict[str, Any]) -> Tuple[bool, str]:
+    def actualizar_estudiante(self, estudiante_id: int, datos_actualizados: dict):
         """Actualizar estudiante existente"""
         try:
-            # Verificar que existe
-            estudiante = self.obtener_estudiante_por_id(estudiante_id)
-            if not estudiante:
-                return False, "Estudiante no encontrado"
+            # Obtener estudiante actual
+            estudiante_actual = self.obtener_estudiante_por_id(estudiante_id)
+            if not estudiante_actual:
+                raise ValueError(f"Estudiante {estudiante_id} no encontrado")
             
             # Preparar SET clauses
             set_clauses = []
             valores = []
             
-            for campo, valor in datos.items():
-                if campo not in ['id', 'fecha_creacion', 'sesion_id', 'modo_nube']:
-                    if valor != estudiante.get(campo):
+            for campo, valor in datos_actualizados.items():
+                if campo not in ['id', 'fecha_creacion']:  # Campos que no se actualizan
+                    if valor != estudiante_actual[campo]:  # Solo actualizar si cambió
                         set_clauses.append(f"{campo} = ?")
                         valores.append(valor)
             
             if not set_clauses:
-                return True, "No hay cambios para actualizar"
+                self.logger.warning(f"⚠️ No hay cambios para actualizar en estudiante {estudiante_id}")
+                return True
             
             # Añadir fecha de actualización
             set_clauses.append("fecha_actualizacion = CURRENT_TIMESTAMP")
             
-            # Ejecutar actualización
+            # Construir y ejecutar query
             valores.append(estudiante_id)
             query = f"UPDATE estudiantes SET {', '.join(set_clauses)} WHERE id = ?"
-            self.db.ejecutar_commit(query, tuple(valores))
             
-            # Limpiar cache de estadísticas
-            self._cache_estadisticas = None
+            cursor = self.conexion_local.cursor()
+            cursor.execute(query, valores)
+            self.conexion_local.commit()
             
-            return True, "Estudiante actualizado exitosamente"
+            self.logger.info(f"✅ Estudiante actualizado: ID {estudiante_id}")
+            
+            # Registrar en auditoría
+            cambios = ', '.join([f"{k}: {v}" for k, v in datos_actualizados.items() 
+                               if k in datos_actualizados and estudiante_actual[k] != v])
+            self._registrar_auditoria('UPDATE', 'estudiantes', estudiante_id, 
+                                     f"Estudiante actualizado: {cambios}")
+            
+            return True
             
         except Exception as e:
-            return False, f"Error al actualizar estudiante: {str(e)}"
+            self.logger.error(f"❌ Error actualizando estudiante {estudiante_id}: {e}")
+            raise
     
-    def eliminar_estudiante(self, estudiante_id: int) -> Tuple[bool, str]:
+    def eliminar_estudiante(self, estudiante_id: int):
         """Eliminar estudiante (baja lógica)"""
         try:
-            # Verificar que no tenga inscripciones activas
-            inscripciones = self.db.ejecutar_query(
-                "SELECT id FROM inscritos WHERE estudiante_id = ? AND estatus = 'Inscrito'",
+            cursor = self.conexion_local.cursor()
+            
+            # Verificar si tiene registros relacionados
+            cursor.execute("SELECT COUNT(*) FROM inscritos WHERE estudiante_id = ?", (estudiante_id,))
+            if cursor.fetchone()[0] > 0:
+                raise ValueError("No se puede eliminar estudiante con inscripciones activas")
+            
+            cursor.execute("SELECT COUNT(*) FROM egresados WHERE estudiante_id = ?", (estudiante_id,))
+            if cursor.fetchone()[0] > 0:
+                raise ValueError("No se puede eliminar estudiante egresado")
+            
+            # Baja lógica (cambio de estado)
+            cursor.execute(
+                "UPDATE estudiantes SET estado_estudiante = 'Baja Definitiva', fecha_actualizacion = CURRENT_TIMESTAMP WHERE id = ?",
                 (estudiante_id,)
             )
+            self.conexion_local.commit()
             
-            if inscripciones:
-                return False, "No se puede eliminar estudiante con inscripciones activas"
+            self.logger.info(f"✅ Estudiante dado de baja: ID {estudiante_id}")
             
-            # Baja lógica
-            query = """
-                UPDATE estudiantes 
-                SET estado_estudiante = 'Baja Definitiva', 
-                    activo = 0,
-                    fecha_actualizacion = CURRENT_TIMESTAMP 
-                WHERE id = ?
-            """
-            self.db.ejecutar_commit(query, (estudiante_id,))
+            # Registrar en auditoría
+            self._registrar_auditoria('UPDATE', 'estudiantes', estudiante_id, 
+                                     "Estudiante dado de baja (Baja Definitiva)")
             
-            # Limpiar cache
-            self._cache_estadisticas = None
-            
-            return True, "Estudiante dado de baja exitosamente"
+            return True
             
         except Exception as e:
-            return False, f"Error al eliminar estudiante: {str(e)}"
+            self.logger.error(f"❌ Error eliminando estudiante {estudiante_id}: {e}")
+            raise
     
-    def cambiar_estado_estudiante(self, estudiante_id: int, nuevo_estado: str) -> Tuple[bool, str]:
+    def cambiar_estado_estudiante(self, estudiante_id: int, nuevo_estado: str):
         """Cambiar estado de estudiante"""
-        # Validar estado
-        estados_validos = self.config.obtener('estados.estudiante', [])
-        if nuevo_estado not in estados_validos:
-            return False, f"Estado inválido. Debe ser: {', '.join(estados_validos)}"
-        
         try:
-            query = """
-                UPDATE estudiantes 
-                SET estado_estudiante = ?, 
-                    fecha_actualizacion = CURRENT_TIMESTAMP 
-                WHERE id = ?
-            """
-            self.db.ejecutar_commit(query, (nuevo_estado, estudiante_id))
+            if nuevo_estado not in ESTADOS_ESTUDIANTE:
+                raise ValueError(f"Estado inválido. Debe ser: {', '.join(ESTADOS_ESTUDIANTE)}")
             
-            # Si es egresado, registrar en tabla de egresados
-            if nuevo_estado == 'Egresado':
-                estudiante = self.obtener_estudiante_por_id(estudiante_id)
-                if estudiante:
-                    self._registrar_egresado_automatico(estudiante_id)
+            cursor = self.conexion_local.cursor()
+            cursor.execute(
+                "UPDATE estudiantes SET estado_estudiante = ?, fecha_actualizacion = CURRENT_TIMESTAMP WHERE id = ?",
+                (nuevo_estado, estudiante_id)
+            )
             
-            # Limpiar cache
-            self._cache_estadisticas = None
+            if cursor.rowcount == 0:
+                raise ValueError(f"Estudiante {estudiante_id} no encontrado")
             
-            return True, f"Estado cambiado a {nuevo_estado}"
+            self.conexion_local.commit()
+            
+            self.logger.info(f"✅ Estado cambiado a '{nuevo_estado}' para estudiante {estudiante_id}")
+            
+            # Registrar en auditoría
+            self._registrar_auditoria('UPDATE', 'estudiantes', estudiante_id, 
+                                     f"Estado cambiado a: {nuevo_estado}")
+            
+            return True
             
         except Exception as e:
-            return False, f"Error cambiando estado: {str(e)}"
+            self.logger.error(f"❌ Error cambiando estado del estudiante {estudiante_id}: {e}")
+            raise
     
-    # =========================================================================
-    # MÉTODOS PARA INSCRIPCIONES
-    # =========================================================================
+    # =============================================================================
+    # OPERACIONES PARA INSCRITOS
+    # =============================================================================
     
-    def obtener_inscripciones(
-        self, 
-        estudiante_id: Optional[int] = None,
-        ciclo_escolar: Optional[str] = None,
-        estatus: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    def obtener_inscripciones(self, estudiante_id: int = None, ciclo_escolar: str = None):
         """Obtener inscripciones"""
         try:
             query = """
                 SELECT i.*, e.matricula, e.nombre, e.apellido_paterno, e.apellido_materno
                 FROM inscritos i
                 JOIN estudiantes e ON i.estudiante_id = e.id
-                WHERE e.activo = 1
+                WHERE 1=1
             """
             params = []
             
@@ -1075,88 +716,147 @@ class SistemaGestionEscolar:
                 query += " AND i.ciclo_escolar = ?"
                 params.append(ciclo_escolar)
             
-            if estatus:
-                query += " AND i.estatus = ?"
-                params.append(estatus)
-            
             query += " ORDER BY i.fecha_inscripcion DESC"
             
-            return self.db.ejecutar_query(query, tuple(params))
+            cursor = self.conexion_local.cursor()
+            cursor.execute(query, params)
+            return cursor.fetchall()
             
         except Exception as e:
-            st.error(f"❌ Error obteniendo inscripciones: {e}")
+            self.logger.error(f"❌ Error obteniendo inscripciones: {e}")
             return []
     
-    def inscribir_estudiante(
-        self, 
-        estudiante_id: int, 
-        ciclo_escolar: str,
-        semestre: Optional[int] = None,
-        creditos_inscritos: Optional[int] = None
-    ) -> Tuple[bool, str, Optional[int]]:
-        """Inscribir estudiante en ciclo escolar"""
+    def inscribir_estudiante(self, estudiante_id: int, ciclo_escolar: str, 
+                            semestre: int = None, creditos_inscritos: int = None):
+        """Inscribir estudiante en un ciclo escolar"""
         try:
             # Verificar que el estudiante existe y está activo
-            estudiante = self.obtener_estudiante_por_id(estudiante_id)
-            if not estudiante:
-                return False, "Estudiante no encontrado", None
+            cursor = self.conexion_local.cursor()
+            cursor.execute(
+                "SELECT estado_estudiante FROM estudiantes WHERE id = ?",
+                (estudiante_id,)
+            )
+            resultado = cursor.fetchone()
             
-            if estudiante['estado_estudiante'] != 'Activo':
-                return False, f"Estudiante no está activo (estado: {estudiante['estado_estudiante']})", None
+            if not resultado:
+                raise ValueError(f"Estudiante {estudiante_id} no encontrado")
+            
+            if resultado[0] != 'Activo':
+                raise ValueError(f"Estudiante no está activo (estado: {resultado[0]})")
             
             # Verificar que no esté ya inscrito en el mismo ciclo
-            existe = self.db.obtener_uno(
-                "SELECT id FROM inscritos WHERE estudiante_id = ? AND ciclo_escolar = ?",
+            cursor.execute(
+                "SELECT COUNT(*) FROM inscritos WHERE estudiante_id = ? AND ciclo_escolar = ?",
                 (estudiante_id, ciclo_escolar)
             )
-            
-            if existe:
-                return False, f"Estudiante ya inscrito en el ciclo {ciclo_escolar}", None
+            if cursor.fetchone()[0] > 0:
+                raise ValueError(f"Estudiante ya inscrito en el ciclo {ciclo_escolar}")
             
             # Insertar inscripción
-            query = """
-                INSERT INTO inscritos 
-                (estudiante_id, ciclo_escolar, semestre, creditos_inscritos, fecha_inscripcion)
+            cursor.execute("""
+                INSERT INTO inscritos (estudiante_id, ciclo_escolar, semestre, creditos_inscritos, fecha_inscripcion)
                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """
-            inscripcion_id = self.db.ejecutar_commit(
-                query, 
-                (estudiante_id, ciclo_escolar, semestre, creditos_inscritos)
-            )
+            """, (estudiante_id, ciclo_escolar, semestre, creditos_inscritos))
             
-            # Actualizar semestre del estudiante si es mayor
-            if semestre and semestre > estudiante.get('semestre', 0):
-                self.db.ejecutar_commit(
-                    "UPDATE estudiantes SET semestre = ? WHERE id = ?",
-                    (semestre, estudiante_id)
-                )
+            self.conexion_local.commit()
             
-            # Limpiar cache
-            self._cache_estadisticas = None
+            inscripcion_id = cursor.lastrowid
+            self.logger.info(f"✅ Estudiante {estudiante_id} inscrito en ciclo {ciclo_escolar}")
             
-            return True, "Estudiante inscrito exitosamente", inscripcion_id
+            # Registrar en auditoría
+            self._registrar_auditoria('INSERT', 'inscritos', inscripcion_id,
+                                     f"Estudiante {estudiante_id} inscrito en {ciclo_escolar}")
+            
+            return inscripcion_id
             
         except Exception as e:
-            return False, f"Error inscribiendo estudiante: {str(e)}", None
+            self.logger.error(f"❌ Error inscribiendo estudiante {estudiante_id}: {e}")
+            raise
     
-    # =========================================================================
-    # MÉTODOS PARA EGRESADOS
-    # =========================================================================
+    def actualizar_promedio_inscripcion(self, inscripcion_id: int, promedio_ciclo: float):
+        """Actualizar promedio de una inscripción"""
+        try:
+            cursor = self.conexion_local.cursor()
+            cursor.execute(
+                "UPDATE inscritos SET promedio_ciclo = ? WHERE id = ?",
+                (promedio_ciclo, inscripcion_id)
+            )
+            
+            if cursor.rowcount == 0:
+                raise ValueError(f"Inscripción {inscripcion_id} no encontrada")
+            
+            self.conexion_local.commit()
+            
+            self.logger.info(f"✅ Promedio actualizado para inscripción {inscripcion_id}: {promedio_ciclo}")
+            
+            # Registrar en auditoría
+            self._registrar_auditoria('UPDATE', 'inscritos', inscripcion_id,
+                                     f"Promedio actualizado a {promedio_ciclo}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error actualizando promedio para inscripción {inscripcion_id}: {e}")
+            raise
     
-    def obtener_egresados(
-        self,
-        filtro_titulo: Optional[str] = None,
-        filtro_fecha_desde: Optional[str] = None,
-        limite: int = 50
-    ) -> List[Dict[str, Any]]:
+    # =============================================================================
+    # OPERACIONES PARA EGRESADOS
+    # =============================================================================
+    
+    def registrar_egresado(self, estudiante_id: int, fecha_egreso: str,
+                          titulo_obtenido: str = None, promedio_final: float = None):
+        """Registrar estudiante como egresado"""
+        try:
+            # Verificar que el estudiante existe
+            estudiante = self.obtener_estudiante_por_id(estudiante_id)
+            if not estudiante:
+                raise ValueError(f"Estudiante {estudiante_id} no encontrado")
+            
+            # Verificar que no esté ya registrado como egresado
+            cursor = self.conexion_local.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM egresados WHERE estudiante_id = ?",
+                (estudiante_id,)
+            )
+            if cursor.fetchone()[0] > 0:
+                raise ValueError(f"Estudiante {estudiante_id} ya está registrado como egresado")
+            
+            # Insertar registro de egresado
+            cursor.execute("""
+                INSERT INTO egresados (estudiante_id, fecha_egreso, titulo_obtenido, promedio_final, fecha_registro)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (estudiante_id, fecha_egreso, titulo_obtenido, promedio_final))
+            
+            # Actualizar estado del estudiante
+            cursor.execute(
+                "UPDATE estudiantes SET estado_estudiante = 'Egresado', fecha_egreso = ? WHERE id = ?",
+                (fecha_egreso, estudiante_id)
+            )
+            
+            self.conexion_local.commit()
+            
+            egresado_id = cursor.lastrowid
+            self.logger.info(f"✅ Egresado registrado: ID {egresado_id} (Estudiante: {estudiante_id})")
+            
+            # Registrar en auditoría
+            self._registrar_auditoria('INSERT', 'egresados', egresado_id,
+                                     f"Estudiante {estudiante_id} registrado como egresado")
+            
+            return egresado_id
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error registrando egresado {estudiante_id}: {e}")
+            raise
+    
+    def obtener_egresados(self, filtro_titulo: str = None, filtro_fecha_desde: str = None):
         """Obtener lista de egresados"""
         try:
             query = """
-                SELECT e.*, est.matricula, est.nombre, est.apellido_paterno, 
-                       est.apellido_materno, est.carrera, est.nivel_estudio
+                SELECT e.*, est.matricula, est.nombre, est.apellido_paterno, est.apellido_materno,
+                       est.carrera, est.nivel_estudio
                 FROM egresados e
                 JOIN estudiantes est ON e.estudiante_id = est.id
-                WHERE est.activo = 1
+                WHERE 1=1
             """
             params = []
             
@@ -1168,112 +868,69 @@ class SistemaGestionEscolar:
                 query += " AND e.fecha_egreso >= ?"
                 params.append(filtro_fecha_desde)
             
-            query += " ORDER BY e.fecha_egreso DESC LIMIT ?"
-            params.append(limite)
+            query += " ORDER BY e.fecha_egreso DESC"
             
-            return self.db.ejecutar_query(query, tuple(params))
+            cursor = self.conexion_local.cursor()
+            cursor.execute(query, params)
+            return cursor.fetchall()
             
         except Exception as e:
-            st.error(f"❌ Error obteniendo egresados: {e}")
+            self.logger.error(f"❌ Error obteniendo egresados: {e}")
             return []
     
-    def registrar_egresado(
-        self,
-        estudiante_id: int,
-        fecha_egreso: str,
-        titulo_obtenido: str,
-        promedio_final: float
-    ) -> Tuple[bool, str, Optional[int]]:
-        """Registrar estudiante como egresado"""
+    # =============================================================================
+    # OPERACIONES PARA CONTRATADOS
+    # =============================================================================
+    
+    def registrar_contratacion(self, egresado_id: int, empresa: str, 
+                              puesto: str = None, fecha_contratacion: str = None,
+                              salario_inicial: float = None, tipo_contrato: str = None):
+        """Registrar contratación de egresado"""
         try:
-            # Verificar que el estudiante existe
-            estudiante = self.obtener_estudiante_por_id(estudiante_id)
-            if not estudiante:
-                return False, "Estudiante no encontrado", None
-            
-            # Verificar que no esté ya registrado como egresado
-            existe = self.db.obtener_uno(
-                "SELECT id FROM egresados WHERE estudiante_id = ?",
-                (estudiante_id,)
+            # Verificar que el egresado existe
+            cursor = self.conexion_local.cursor()
+            cursor.execute(
+                "SELECT estudiante_id FROM egresados WHERE id = ?",
+                (egresado_id,)
             )
-            if existe:
-                return False, "Estudiante ya está registrado como egresado", None
+            resultado = cursor.fetchone()
             
-            # Insertar registro de egresado
-            query = """
-                INSERT INTO egresados 
-                (estudiante_id, fecha_egreso, titulo_obtenido, promedio_final, fecha_registro)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """
-            egresado_id = self.db.ejecutar_commit(
-                query, 
-                (estudiante_id, fecha_egreso, titulo_obtenido, promedio_final)
-            )
+            if not resultado:
+                raise ValueError(f"Egresado {egresado_id} no encontrado")
             
-            # Actualizar estado del estudiante
-            self.db.ejecutar_commit(
-                "UPDATE estudiantes SET estado_estudiante = 'Egresado', fecha_egreso = ? WHERE id = ?",
-                (fecha_egreso, estudiante_id)
-            )
+            # Insertar registro de contratación
+            cursor.execute("""
+                INSERT INTO contratados (egresado_id, empresa, puesto, fecha_contratacion, 
+                                       salario_inicial, tipo_contrato, fecha_registro)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (egresado_id, empresa, puesto, fecha_contratacion, salario_inicial, tipo_contrato))
             
-            # Limpiar cache
-            self._cache_estadisticas = None
+            self.conexion_local.commit()
             
-            return True, "Egresado registrado exitosamente", egresado_id
+            contratado_id = cursor.lastrowid
+            self.logger.info(f"✅ Contratación registrada: ID {contratado_id} (Egresado: {egresado_id})")
+            
+            # Registrar en auditoría
+            self._registrar_auditoria('INSERT', 'contratados', contratado_id,
+                                     f"Egresado {egresado_id} contratado por {empresa}")
+            
+            return contratado_id
             
         except Exception as e:
-            return False, f"Error registrando egresado: {str(e)}", None
+            self.logger.error(f"❌ Error registrando contratación para egresado {egresado_id}: {e}")
+            raise
     
-    def _registrar_egresado_automatico(self, estudiante_id: int) -> bool:
-        """Registrar egresado automáticamente al cambiar estado"""
-        try:
-            estudiante = self.obtener_estudiante_por_id(estudiante_id)
-            if not estudiante:
-                return False
-            
-            # Verificar si ya está registrado
-            existe = self.db.obtener_uno(
-                "SELECT id FROM egresados WHERE estudiante_id = ?",
-                (estudiante_id,)
-            )
-            if existe:
-                return True
-            
-            # Registrar con datos básicos
-            fecha_actual = datetime.now().strftime('%Y-%m-%d')
-            query = """
-                INSERT INTO egresados 
-                (estudiante_id, fecha_egreso, fecha_registro)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-            """
-            self.db.ejecutar_commit(query, (estudiante_id, fecha_actual))
-            
-            return True
-            
-        except Exception as e:
-            print(f"Error registrando egresado automático: {e}")
-            return False
-    
-    # =========================================================================
-    # MÉTODOS PARA CONTRATADOS
-    # =========================================================================
-    
-    def obtener_contratados(
-        self,
-        filtro_empresa: Optional[str] = None,
-        filtro_puesto: Optional[str] = None,
-        limite: int = 50
-    ) -> List[Dict[str, Any]]:
-        """Obtener lista de contratados"""
+    def obtener_contratados(self, filtro_empresa: str = None, filtro_puesto: str = None):
+        """Obtener lista de egresados contratados"""
         try:
             query = """
                 SELECT c.*, e.estudiante_id, e.titulo_obtenido, e.promedio_final,
-                       est.matricula, est.nombre, est.apellido_paterno, 
-                       est.apellido_materno, est.carrera
+                       est.matricula, est.nombre, est.apellido_paterno, est.apellido_materno,
+                       est.carrera
                 FROM contratados c
                 JOIN egresados e ON c.egresado_id = e.id
                 JOIN estudiantes est ON e.estudiante_id = est.id
-                WHERE c.activo = 1
+                WHERE 1=1
             """
             params = []
             
@@ -1285,211 +942,121 @@ class SistemaGestionEscolar:
                 query += " AND c.puesto LIKE ?"
                 params.append(f"%{filtro_puesto}%")
             
-            query += " ORDER BY c.fecha_contratacion DESC LIMIT ?"
-            params.append(limite)
+            query += " ORDER BY c.fecha_contratacion DESC"
             
-            return self.db.ejecutar_query(query, tuple(params))
+            cursor = self.conexion_local.cursor()
+            cursor.execute(query, params)
+            return cursor.fetchall()
             
         except Exception as e:
-            st.error(f"❌ Error obteniendo contratados: {e}")
+            self.logger.error(f"❌ Error obteniendo contratados: {e}")
             return []
     
-    # =========================================================================
+    # =============================================================================
     # ESTADÍSTICAS E INFORMES
-    # =========================================================================
+    # =============================================================================
     
-    def obtener_estadisticas_generales(self) -> Dict[str, Any]:
+    def obtener_estadisticas_generales(self):
         """Obtener estadísticas generales del sistema"""
-        # Verificar cache
-        if (self._cache_estadisticas and self._cache_timestamp and 
-            (datetime.now() - self._cache_timestamp).seconds < self._cache_ttl):
-            return self._cache_estadisticas
-        
-        estadisticas = {}
-        
         try:
+            cursor = self.conexion_local.cursor()
+            estadisticas = {}
+            
             # Total de estudiantes por estado
-            estudiantes_por_estado = self.db.ejecutar_query("""
+            cursor.execute("""
                 SELECT estado_estudiante, COUNT(*) as total
                 FROM estudiantes
-                WHERE activo = 1
                 GROUP BY estado_estudiante
             """)
+            estadisticas['estudiantes_por_estado'] = dict(cursor.fetchall())
             
-            estadisticas['estudiantes_por_estado'] = {
-                item['estado_estudiante']: item['total'] 
-                for item in estudiantes_por_estado
-            }
+            # Total de estudiantes
+            estadisticas['total_estudiantes'] = sum(estadisticas['estudiantes_por_estado'].values())
             
-            # Totales
-            estadisticas['total_estudiantes'] = sum(
-                estadisticas['estudiantes_por_estado'].values()
-            )
+            # Estudiantes activos
             estadisticas['estudiantes_activos'] = estadisticas['estudiantes_por_estado'].get('Activo', 0)
             
             # Egresados
-            egresados = self.db.obtener_uno("SELECT COUNT(*) as total FROM egresados")
-            estadisticas['total_egresados'] = egresados['total'] if egresados else 0
+            cursor.execute("SELECT COUNT(*) FROM egresados")
+            estadisticas['total_egresados'] = cursor.fetchone()[0]
             
             # Contratados
-            contratados = self.db.obtener_uno("SELECT COUNT(DISTINCT egresado_id) as total FROM contratados")
-            estadisticas['egresados_contratados'] = contratados['total'] if contratados else 0
+            cursor.execute("SELECT COUNT(DISTINCT egresado_id) FROM contratados")
+            estadisticas['egresados_contratados'] = cursor.fetchone()[0]
             
-            # Promedio general
-            promedio = self.db.obtener_uno("""
-                SELECT AVG(promedio) as promedio
-                FROM estudiantes 
-                WHERE estado_estudiante = 'Activo' 
-                AND promedio IS NOT NULL
-                AND activo = 1
-            """)
-            estadisticas['promedio_general'] = round(promedio['promedio'] or 0.0, 2)
+            # Promedio general de estudiantes activos
+            cursor.execute("SELECT AVG(promedio) FROM estudiantes WHERE estado_estudiante = 'Activo' AND promedio IS NOT NULL")
+            estadisticas['promedio_general'] = cursor.fetchone()[0] or 0
             
-            # Estudiantes por nivel
-            estudiantes_nivel = self.db.ejecutar_query("""
+            # Estudiantes por nivel de estudio
+            cursor.execute("""
                 SELECT nivel_estudio, COUNT(*) as total
                 FROM estudiantes
-                WHERE nivel_estudio IS NOT NULL AND activo = 1
+                WHERE nivel_estudio IS NOT NULL
                 GROUP BY nivel_estudio
             """)
-            estadisticas['estudiantes_por_nivel'] = {
-                item['nivel_estudio']: item['total']
-                for item in estudiantes_nivel
-            }
+            estadisticas['estudiantes_por_nivel'] = dict(cursor.fetchall())
             
-            # Top carreras
-            top_carreras = self.db.ejecutar_query("""
+            # Estudiantes por carrera
+            cursor.execute("""
                 SELECT carrera, COUNT(*) as total
                 FROM estudiantes
-                WHERE carrera IS NOT NULL AND activo = 1
+                WHERE carrera IS NOT NULL
                 GROUP BY carrera
                 ORDER BY total DESC
                 LIMIT 10
             """)
-            estadisticas['top_carreras'] = {
-                item['carrera']: item['total']
-                for item in top_carreras
-            }
+            estadisticas['top_carreras'] = dict(cursor.fetchall())
             
-            # Inscripciones por ciclo
-            inscripciones_ciclo = self.db.ejecutar_query("""
+            # Inscripciones por ciclo escolar
+            cursor.execute("""
                 SELECT ciclo_escolar, COUNT(*) as total
                 FROM inscritos
                 GROUP BY ciclo_escolar
                 ORDER BY ciclo_escolar DESC
                 LIMIT 5
             """)
-            estadisticas['inscripciones_por_ciclo'] = {
-                item['ciclo_escolar']: item['total']
-                for item in inscripciones_ciclo
-            }
+            estadisticas['inscripciones_por_ciclo'] = dict(cursor.fetchall())
             
-            # Cachear resultados
-            self._cache_estadisticas = estadisticas
-            self._cache_timestamp = datetime.now()
+            return estadisticas
             
         except Exception as e:
-            st.error(f"❌ Error obteniendo estadísticas: {e}")
-            estadisticas = {
-                'total_estudiantes': 0,
-                'estudiantes_activos': 0,
-                'total_egresados': 0,
-                'egresados_contratados': 0,
-                'promedio_general': 0.0,
-                'estudiantes_por_estado': {},
-                'estudiantes_por_nivel': {},
-                'top_carreras': {},
-                'inscripciones_por_ciclo': {}
-            }
-        
-        return estadisticas
+            self.logger.error(f"❌ Error obteniendo estadísticas: {e}")
+            return {}
     
-    def obtener_estadisticas_rapidas(self) -> Dict[str, Any]:
-        """Obtener estadísticas rápidas para el dashboard"""
-        try:
-            stats = {}
-            
-            # Totales básicos
-            total_estudiantes = self.db.obtener_uno(
-                "SELECT COUNT(*) as total FROM estudiantes WHERE activo = 1"
-            )
-            stats['total_estudiantes'] = total_estudiantes['total'] if total_estudiantes else 0
-            
-            estudiantes_activos = self.db.obtener_uno(
-                "SELECT COUNT(*) as total FROM estudiantes WHERE estado_estudiante = 'Activo' AND activo = 1"
-            )
-            stats['estudiantes_activos'] = estudiantes_activos['total'] if estudiantes_activos else 0
-            
-            total_egresados = self.db.obtener_uno("SELECT COUNT(*) as total FROM egresados")
-            stats['total_egresados'] = total_egresados['total'] if total_egresados else 0
-            
-            # Estudiantes de esta sesión
-            estudiantes_sesion = self.db.obtener_uno(
-                "SELECT COUNT(*) as total FROM estudiantes WHERE sesion_id = ?",
-                (self.sesion.session_id,)
-            )
-            stats['estudiantes_sesion'] = estudiantes_sesion['total'] if estudiantes_sesion else 0
-            
-            return stats
-            
-        except Exception as e:
-            print(f"Error obteniendo estadísticas rápidas: {e}")
-            return {
-                'total_estudiantes': 0, 
-                'estudiantes_activos': 0, 
-                'total_egresados': 0,
-                'estudiantes_sesion': 0
-            }
-    
-    def generar_informe_excel(self, tipo_informe: str) -> Tuple[Optional[io.BytesIO], Optional[str]]:
+    def generar_informe_excel(self, tipo_informe: str = 'estudiantes'):
         """Generar informe en formato Excel"""
         try:
+            import pandas as pd
+            
             if tipo_informe == 'estudiantes':
-                query = """
-                    SELECT matricula, nombre, apellido_paterno, apellido_materno,
-                           carrera, nivel_estudio, semestre, estado_estudiante,
-                           promedio, fecha_ingreso
-                    FROM estudiantes
-                    WHERE activo = 1
-                    ORDER BY fecha_ingreso DESC
-                """
-                nombre_archivo = f"informe_estudiantes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                query = "SELECT * FROM estudiantes ORDER BY fecha_ingreso DESC"
+                nombre_archivo = f"informe_estudiantes_{self.util.generar_timestamp()}.xlsx"
                 
             elif tipo_informe == 'egresados':
                 query = """
-                    SELECT e.matricula, e.nombre, e.apellido_paterno, e.apellido_materno,
-                           e.carrera, eg.titulo_obtenido, eg.promedio_final, 
-                           eg.fecha_egreso, eg.numero_cedula
-                    FROM egresados eg
-                    JOIN estudiantes e ON eg.estudiante_id = e.id
-                    ORDER BY eg.fecha_egreso DESC
+                    SELECT e.*, est.matricula, est.nombre, est.apellido_paterno, est.apellido_materno
+                    FROM egresados e
+                    JOIN estudiantes est ON e.estudiante_id = est.id
+                    ORDER BY e.fecha_egreso DESC
                 """
-                nombre_archivo = f"informe_egresados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                nombre_archivo = f"informe_egresados_{self.util.generar_timestamp()}.xlsx"
                 
             elif tipo_informe == 'contratados':
                 query = """
-                    SELECT e.matricula, e.nombre, e.carrera, 
-                           c.empresa, c.puesto, c.fecha_contratacion,
-                           c.salario_actual, c.tipo_contrato
+                    SELECT c.*, est.matricula, est.nombre, est.carrera, e.titulo_obtenido
                     FROM contratados c
-                    JOIN egresados eg ON c.egresado_id = eg.id
-                    JOIN estudiantes e ON eg.estudiante_id = e.id
-                    WHERE c.activo = 1
+                    JOIN egresados e ON c.egresado_id = e.id
+                    JOIN estudiantes est ON e.estudiante_id = est.id
                     ORDER BY c.fecha_contratacion DESC
                 """
-                nombre_archivo = f"informe_contratados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                nombre_archivo = f"informe_contratados_{self.util.generar_timestamp()}.xlsx"
                 
             else:
-                return None, None
+                raise ValueError(f"Tipo de informe no válido: {tipo_informe}")
             
-            # Obtener datos
-            datos = self.db.ejecutar_query(query)
-            
-            if not datos:
-                return None, None
-            
-            # Crear DataFrame
-            df = pd.DataFrame(datos)
+            # Ejecutar consulta y crear DataFrame
+            df = pd.read_sql_query(query, self.conexion_local)
             
             # Crear archivo Excel en memoria
             output = io.BytesIO()
@@ -1498,203 +1065,102 @@ class SistemaGestionEscolar:
             
             output.seek(0)
             
+            self.logger.info(f"✅ Informe {tipo_informe} generado: {nombre_archivo}")
             return output, nombre_archivo
             
         except Exception as e:
-            st.error(f"❌ Error generando informe Excel: {e}")
-            return None, None
+            self.logger.error(f"❌ Error generando informe Excel: {e}")
+            raise
     
-    # =========================================================================
-    # MÉTODOS DE SINCRONIZACIÓN SSH
-    # =========================================================================
+    # =============================================================================
+    # UTILIDADES Y MÉTODOS AUXILIARES
+    # =============================================================================
     
-    def conectar_ssh(self) -> Tuple[bool, str]:
-        """Conectar al servidor SSH"""
-        return self.gestor_ssh.conectar()
+    def _registrar_auditoria(self, accion: str, tabla: str, registro_id: int, detalles: str = None):
+        """Registrar acción en auditoría"""
+        try:
+            cursor = self.conexion_local.cursor()
+            
+            # Obtener usuario actual si hay sesión
+            usuario_id = None
+            if hasattr(st, 'session_state') and hasattr(st.session_state, 'get'):
+                usuario_id = st.session_state.get('usuario_id')
+            
+            cursor.execute("""
+                INSERT INTO auditoria (usuario_id, accion, tabla_afectada, registro_id, detalles)
+                VALUES (?, ?, ?, ?, ?)
+            """, (usuario_id, accion, tabla, registro_id, detalles))
+            
+            self.conexion_local.commit()
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error registrando auditoría: {e}")
     
-    def descargar_db_remota(self) -> Tuple[bool, str]:
-        """Descargar base de datos remota"""
-        success, msg = self.db.descargar_db_remota()
-        if success:
-            self.ultima_sincronizacion = datetime.now()
-            self.limpiar_cache()  # Limpiar cache después de sincronización
-        return success, msg
+    def validar_datos_estudiante(self, datos: dict) -> list:
+        """Validar datos de estudiante antes de insertar/actualizar"""
+        errores = []
+        
+        # Validar matrícula
+        if not datos.get('matricula'):
+            errores.append("La matrícula es obligatoria")
+        elif not self.util.validar_matricula(datos['matricula']):
+            errores.append("Formato de matrícula inválido")
+        
+        # Validar nombre
+        if not datos.get('nombre'):
+            errores.append("El nombre es obligatorio")
+        
+        # Validar apellido paterno
+        if not datos.get('apellido_paterno'):
+            errores.append("El apellido paterno es obligatorio")
+        
+        # Validar email
+        if datos.get('email') and not self.util.validar_email(datos['email']):
+            errores.append("Formato de email inválido")
+        
+        # Validar CURP si se proporciona
+        if datos.get('curp') and len(datos['curp']) != 18:
+            errores.append("El CURP debe tener 18 caracteres")
+        
+        # Validar fecha de nacimiento
+        if datos.get('fecha_nacimiento'):
+            try:
+                fecha_nac = datetime.strptime(datos['fecha_nacimiento'], '%Y-%m-%d')
+                if fecha_nac > datetime.now():
+                    errores.append("La fecha de nacimiento no puede ser futura")
+            except:
+                errores.append("Formato de fecha inválido (usar YYYY-MM-DD)")
+        
+        return errores
     
-    def subir_db_local(self) -> Tuple[bool, str]:
-        """Subir base de datos local al servidor"""
-        success, msg = self.db.subir_db_local()
-        if success:
-            self.ultima_sincronizacion = datetime.now()
-        return success, msg
-    
-    def obtener_estado_ssh(self) -> Dict[str, Any]:
-        """Obtener estado de la conexión SSH"""
-        return self.gestor_ssh.obtener_estado()
+    def obtener_proximo_ciclo_escolar(self):
+        """Obtener el próximo ciclo escolar basado en la fecha actual"""
+        hoy = datetime.now()
+        año_actual = hoy.year
+        mes_actual = hoy.month
+        
+        # Si estamos después de junio, el próximo ciclo es del siguiente año
+        if mes_actual > 6:
+            return f"{año_actual}-{año_actual + 1}"
+        else:
+            return f"{año_actual - 1}-{año_actual}"
     
     def limpiar_cache(self):
-        """Limpiar cache del sistema"""
-        self._cache_estadisticas = None
-        self._cache_timestamp = None
+        """Limpiar caché del sistema"""
+        self.cache_data.clear()
+        self.cache_timestamps.clear()
+        self.logger.info("🗑️ Caché limpiado")
     
-    def obtener_estado_sistema(self) -> Dict[str, Any]:
-        """Obtener estado completo del sistema"""
-        estado_ssh = self.gestor_ssh.obtener_estado()
-        
-        return {
-            'aplicacion': {
-                'estado': self.estado_aplicacion,
-                'modo': self.modo_operacion,
-                'version': self.config.obtener('app.version'),
-                'ssh_conectado': estado_ssh['conectado'],
-                'ultima_sincronizacion': self.ultima_sincronizacion
-            },
-            'sesion': self.sesion.obtener_info_sesion(),
-            'estadisticas': self.obtener_estadisticas_rapidas()
-        }
-
-# =============================================================================
-# INTERFAZ DE USUARIO MODIFICADA
-# =============================================================================
-
-class InterfazUsuario:
-    """Clase para manejar la interfaz de usuario"""
-    
-    def __init__(self, sistema: SistemaGestionEscolar):
-        self.sistema = sistema
-        self.config = sistema.config
-    
-    def mostrar_barra_lateral(self) -> str:
-        """Mostrar barra lateral con información de conexión SSH"""
-        with st.sidebar:
-            # Logo y título
-            st.markdown(f"""
-            <div style="text-align: center;">
-                <h1 style="color: #1E88E5;">{self.config.obtener('app.title')}</h1>
-                <p style="color: #666; font-size: 0.9em;">Versión {self.config.obtener('app.version')}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            # Estado del sistema con información SSH
-            st.subheader("🌐 Estado de Conexión")
-            
-            estado_ssh = self.sistema.obtener_estado_ssh()
-            
-            if estado_ssh['conectado']:
-                st.success(f"✅ Conectado a {estado_ssh['host']}")
-                if estado_ssh['ultima_conexion']:
-                    st.caption(f"Última conexión: {estado_ssh['ultima_conexion'].strftime('%H:%M:%S')}")
-            else:
-                st.error("❌ No conectado al servidor")
-                if estado_ssh['error_conexion']:
-                    st.caption(f"Error: {estado_ssh['error_conexion']}")
-            
-            # Información de servidor
-            with st.expander("📡 Información del servidor"):
-                if estado_ssh['host']:
-                    st.write(f"**Host:** {estado_ssh['host']}:{estado_ssh['port']}")
-                    st.write(f"**Usuario:** {estado_ssh['username']}")
-                    
-                    # Botón para reconectar
-                    if st.button("🔄 Reconectar", use_container_width=True):
-                        success, msg = self.sistema.conectar_ssh()
-                        if success:
-                            st.success(f"✅ {msg}")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
-            
-            st.markdown("---")
-            
-            # Navegación principal
-            st.subheader("🧭 Navegación")
-            
-            opciones = [
-                "🏠 Panel de Control",
-                "👨‍🎓 Gestión de Estudiantes",
-                "📝 Gestión de Inscripciones",
-                "🎓 Gestión de Egresados",
-                "💼 Seguimiento de Contratados",
-                "⚙️ Configuración del Sistema",
-                "🔄 Sincronización"
-            ]
-            
-            opcion_seleccionada = st.radio(
-                "Seleccionar módulo:",
-                opciones,
-                label_visibility="collapsed"
-            )
-            
-            st.markdown("---")
-            
-            # Acciones de sincronización
-            st.subheader("🔄 Acciones de Sincronización")
-            
-            estado_ssh = self.sistema.obtener_estado_ssh()
-            
-            if estado_ssh['conectado']:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if st.button("📥 Descargar", use_container_width=True, help="Descargar datos del servidor"):
-                        with st.spinner("Descargando..."):
-                            success, msg = self.sistema.descargar_db_remota()
-                            if success:
-                                st.success(f"✅ {msg}")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ {msg}")
-                
-                with col2:
-                    if st.button("📤 Subir", use_container_width=True, help="Subir datos al servidor"):
-                        with st.spinner("Subiendo..."):
-                            success, msg = self.sistema.subir_db_local()
-                            if success:
-                                st.success(f"✅ {msg}")
-                            else:
-                                st.error(f"❌ {msg}")
-            else:
-                st.warning("Conecte al servidor para sincronizar")
-            
-            st.markdown("---")
-            
-            # Información de versión
-            estado = self.sistema.obtener_estado_sistema()
-            st.caption(f"v{estado['aplicacion']['version']} | SSH: {'✅' if estado_ssh['conectado'] else '❌'}")
-            
-            return opcion_seleccionada
+    # =============================================================================
+    # MÉTODOS PARA LA INTERFAZ WEB
+    # =============================================================================
     
     def mostrar_panel_control(self):
         """Mostrar panel de control principal"""
-        st.title("📊 Panel de Control")
-        
-        # Información del sistema
-        estado = self.sistema.obtener_estado_sistema()
-        estado_ssh = self.sistema.obtener_estado_ssh()
-        
-        with st.expander("ℹ️ Información del sistema", expanded=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**Estado:**", estado['aplicacion']['estado'].capitalize())
-                st.write("**Modo:**", estado['aplicacion']['modo'].capitalize())
-                st.write("**Versión:**", estado['aplicacion']['version'])
-            
-            with col2:
-                if estado_ssh['conectado']:
-                    st.success("🔗 SSH Conectado")
-                    st.write(f"**Host:** {estado_ssh['host']}")
-                else:
-                    st.error("❌ SSH No conectado")
-                
-                if estado['aplicacion']['ultima_sincronizacion']:
-                    st.write("**Última sync:**", estado['aplicacion']['ultima_sincronizacion'].strftime('%Y-%m-%d %H:%M'))
+        st.title("📊 Panel de Control - Sistema de Gestión Escolar")
         
         # Estadísticas rápidas
-        estadisticas = self.sistema.obtener_estadisticas_generales()
-        
-        st.subheader("📈 Estadísticas Principales")
+        estadisticas = self.obtener_estadisticas_generales()
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -1707,138 +1173,32 @@ class InterfazUsuario:
         with col4:
             st.metric("💼 Contratados", estadisticas.get('egresados_contratados', 0))
         
-        st.markdown("---")
+        # Gráfico de distribución por estado
+        if estadisticas.get('estudiantes_por_estado'):
+            st.subheader("📈 Distribución de Estudiantes por Estado")
+            df_estados = pd.DataFrame(
+                list(estadisticas['estudiantes_por_estado'].items()),
+                columns=['Estado', 'Cantidad']
+            )
+            st.bar_chart(df_estados.set_index('Estado'))
         
-        # Gráficos y visualizaciones
-        col1, col2 = st.columns(2)
+        # Últimas actividades (simulado)
+        st.subheader("📋 Últimas Actividades")
+        actividades = [
+            {"fecha": "2024-01-15", "accion": "Nuevo estudiante registrado", "detalle": "Juan Pérez"},
+            {"fecha": "2024-01-14", "accion": "Inscripción completada", "detalle": "Ciclo 2024-1"},
+            {"fecha": "2024-01-13", "accion": "Egresado registrado", "detalle": "María González"},
+            {"fecha": "2024-01-12", "accion": "Contratación registrada", "detalle": "Empresa ABC"},
+        ]
         
-        with col1:
-            st.subheader("📊 Distribución por Estado")
-            if estadisticas.get('estudiantes_por_estado'):
-                df_estados = pd.DataFrame(
-                    list(estadisticas['estudiantes_por_estado'].items()),
-                    columns=['Estado', 'Cantidad']
-                )
-                st.bar_chart(df_estados.set_index('Estado'))
-            else:
-                st.info("No hay datos de distribución")
-        
-        with col2:
-            st.subheader("📚 Estudiantes por Nivel")
-            if estadisticas.get('estudiantes_por_nivel'):
-                df_niveles = pd.DataFrame(
-                    list(estadisticas['estudiantes_por_nivel'].items()),
-                    columns=['Nivel', 'Cantidad']
-                )
-                st.bar_chart(df_niveles.set_index('Nivel'))
-            else:
-                st.info("No hay datos por nivel")
-    
-    def mostrar_panel_sincronizacion(self):
-        """Mostrar panel de sincronización"""
-        st.title("🔄 Sincronización con Servidor Remoto")
-        
-        estado_ssh = self.sistema.obtener_estado_ssh()
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📡 Estado de Conexión")
-            
-            if estado_ssh['conectado']:
-                st.success(f"✅ Conectado a {estado_ssh['host']}")
-                
-                # Probar conexión
-                if st.button("🧪 Probar conexión"):
-                    success, msg = self.sistema.gestor_ssh.ejecutar_comando("pwd")
-                    if success:
-                        st.success(f"✅ Conexión activa: {msg}")
-                    else:
-                        st.error(f"❌ {msg}")
-                
-                # Verificar archivos remotos
-                ruta_remota = self.config.obtener('ssh.remote_dir', '/home/POLANCO6/ESCUELANUEVA5')
-                if st.button("📁 Ver archivos en servidor"):
-                    success, archivos = self.sistema.gestor_ssh.listar_directorio(ruta_remota)
-                    if success:
-                        st.write("**Archivos en servidor:**")
-                        for archivo in archivos[:20]:  # Mostrar primeros 20
-                            st.write(f"• {archivo}")
-                    else:
-                        st.error("No se pudo listar archivos")
-            else:
-                st.error("❌ No conectado")
-                
-                # Conectar manualmente
-                if st.button("🔗 Conectar ahora", type="primary"):
-                    success, msg = self.sistema.conectar_ssh()
-                    if success:
-                        st.success(f"✅ {msg}")
-                        st.rerun()
-                    else:
-                        st.error(f"❌ {msg}")
-        
-        with col2:
-            st.subheader("⚙️ Configuración SSH")
-            
-            st.write(f"**Host:** {estado_ssh['host']}")
-            st.write(f"**Puerto:** {estado_ssh['port']}")
-            st.write(f"**Usuario:** {estado_ssh['username']}")
-            
-            # Mostrar rutas remotas configuradas
-            ruta_escuela_db = self.config.obtener('remote_paths.escuela_db', 'No configurada')
-            st.write(f"**Base de datos remota:** {ruta_escuela_db}")
-            
-            if estado_ssh['ultima_conexion']:
-                st.write(f"**Última conexión:** {estado_ssh['ultima_conexion'].strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            if estado_ssh['error_conexion']:
-                st.warning(f"**Último error:** {estado_ssh['error_conexion']}")
-        
-        st.markdown("---")
-        
-        # Acciones de sincronización
-        st.subheader("📊 Sincronización de Datos")
-        
-        if estado_ssh['conectado']:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("📥 Descargar desde servidor", type="primary", use_container_width=True):
-                    with st.spinner("Descargando datos del servidor..."):
-                        success, msg = self.sistema.descargar_db_remota()
-                        if success:
-                            st.success(f"✅ {msg}")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
-            
-            with col2:
-                if st.button("📤 Subir al servidor", use_container_width=True):
-                    with st.spinner("Subiendo datos al servidor..."):
-                        success, msg = self.sistema.subir_db_local()
-                        if success:
-                            st.success(f"✅ {msg}")
-                        else:
-                            st.error(f"❌ {msg}")
-            
-            # Información adicional
-            st.info("""
-            **Nota:** La sincronización reemplazará completamente la base de datos local o remota.
-            Asegúrese de tener un backup antes de realizar operaciones de sincronización.
-            """)
-        else:
-            st.warning("⚠️ Conecte al servidor para habilitar sincronización")
-    
-    # Mantener los métodos restantes de la interfaz original...
-    # mostrar_gestion_estudiantes, mostrar_gestion_inscripciones, etc.
-    # (Estos métodos permanecen igual que en tu código original)
+        for act in actividades:
+            st.write(f"**{act['fecha']}** - {act['accion']}: {act['detalle']}")
     
     def mostrar_gestion_estudiantes(self):
         """Mostrar interfaz de gestión de estudiantes"""
         st.title("👨‍🎓 Gestión de Estudiantes")
         
-        # Pestañas
+        # Pestañas para diferentes funciones
         tab1, tab2, tab3, tab4 = st.tabs([
             "📋 Lista de Estudiantes", 
             "➕ Nuevo Estudiante", 
@@ -1864,22 +1224,25 @@ class InterfazUsuario:
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            estados = ['Todos'] + self.config.obtener('estados.estudiante', [])
-            filtro_estado = st.selectbox("Filtrar por estado:", estados)
+            filtro_estado = st.selectbox(
+                "Filtrar por estado:",
+                ['Todos'] + ESTADOS_ESTUDIANTE
+            )
         
         with col2:
-            niveles = ['Todos'] + self.config.obtener('estados.nivel', [])
-            filtro_nivel = st.selectbox("Filtrar por nivel:", niveles)
+            filtro_nivel = st.selectbox(
+                "Filtrar por nivel:",
+                ['Todos'] + NIVELES_ESTUDIO
+            )
         
         with col3:
             busqueda = st.text_input("Buscar (matrícula/nombre):")
         
         # Obtener estudiantes
-        estudiantes = self.sistema.obtener_estudiantes(
+        estudiantes = self.obtener_estudiantes(
             filtro_estado if filtro_estado != 'Todos' else None,
-            filtro_nivel if filtro_nivel != 'Todos' else None,
             busqueda if busqueda else None,
-            100  # Límite de 100 para vista inicial
+            100  # Límite aumentado para la vista
         )
         
         # Mostrar tabla
@@ -1894,51 +1257,48 @@ class InterfazUsuario:
             # Filtrar columnas existentes
             columnas_existentes = [col for col in columnas_mostrar if col in df.columns]
             
-            st.dataframe(df[columnas_existentes], use_container_width=True, hide_index=True)
+            st.dataframe(df[columnas_existentes], use_container_width=True)
             
-            # Acciones para estudiante seleccionado
+            # Opciones para cada estudiante
             st.subheader("Acciones")
+            estudiante_seleccionado = st.selectbox(
+                "Seleccionar estudiante:",
+                [f"{e['id']} - {e['matricula']} - {e['nombre']} {e['apellido_paterno']}" 
+                 for e in estudiantes]
+            )
             
-            if estudiantes:
-                estudiante_opciones = {
-                    f"{e['id']} - {e['matricula']} - {e['nombre']} {e['apellido_paterno']}": e['id']
-                    for e in estudiantes
-                }
+            if estudiante_seleccionado:
+                estudiante_id = int(estudiante_seleccionado.split(' - ')[0])
                 
-                estudiante_seleccionado = st.selectbox(
-                    "Seleccionar estudiante para acciones:",
-                    list(estudiante_opciones.keys())
-                )
+                col1, col2, col3 = st.columns(3)
                 
-                if estudiante_seleccionado:
-                    estudiante_id = estudiante_opciones[estudiante_seleccionado]
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        nuevo_estado = st.selectbox(
-                            "Cambiar estado:",
-                            self.config.obtener('estados.estudiante', []),
-                            key=f"estado_{estudiante_id}"
-                        )
-                        if st.button("🔄 Actualizar estado", use_container_width=True):
-                            success, msg = self.sistema.cambiar_estado_estudiante(estudiante_id, nuevo_estado)
-                            if success:
-                                st.success(f"✅ {msg}")
+                with col1:
+                    if st.button("📝 Editar", key=f"editar_{estudiante_id}"):
+                        st.session_state['editar_estudiante'] = estudiante_id
+                
+                with col2:
+                    nuevo_estado = st.selectbox(
+                        "Cambiar estado:",
+                        ESTADOS_ESTUDIANTE,
+                        key=f"estado_{estudiante_id}"
+                    )
+                    if st.button("🔄 Actualizar", key=f"actualizar_estado_{estudiante_id}"):
+                        try:
+                            self.cambiar_estado_estudiante(estudiante_id, nuevo_estado)
+                            st.success(f"✅ Estado cambiado a {nuevo_estado}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+                
+                with col3:
+                    if st.button("🗑️ Dar de baja", key=f"baja_{estudiante_id}"):
+                        if st.checkbox(f"¿Confirmar baja del estudiante {estudiante_id}?"):
+                            try:
+                                self.eliminar_estudiante(estudiante_id)
+                                st.success("✅ Estudiante dado de baja")
                                 st.rerun()
-                            else:
-                                st.error(f"❌ {msg}")
-                    
-                    with col2:
-                        if st.button("🗑️ Dar de baja", use_container_width=True):
-                            confirmar = st.checkbox(f"¿Confirmar baja del estudiante {estudiante_id}?")
-                            if confirmar:
-                                success, msg = self.sistema.eliminar_estudiante(estudiante_id)
-                                if success:
-                                    st.success(f"✅ {msg}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {msg}")
+                            except Exception as e:
+                                st.error(f"❌ Error: {e}")
         else:
             st.info("📭 No hay estudiantes que coincidan con los filtros")
     
@@ -1950,64 +1310,79 @@ class InterfazUsuario:
             col1, col2 = st.columns(2)
             
             with col1:
-                matricula = st.text_input("Matrícula *", max_chars=20, help="Ejemplo: A12345678")
+                matricula = st.text_input("Matrícula *", max_chars=20)
                 nombre = st.text_input("Nombre *", max_chars=100)
                 apellido_paterno = st.text_input("Apellido Paterno *", max_chars=100)
                 apellido_materno = st.text_input("Apellido Materno", max_chars=100)
-                fecha_nacimiento = st.date_input("Fecha de Nacimiento", value=None)
-                genero = st.selectbox("Género", self.config.obtener('estados.genero', []))
-                curp = st.text_input("CURP", max_chars=18, help="18 caracteres")
-                rfc = st.text_input("RFC", max_chars=13, help="13 caracteres")
+                fecha_nacimiento = st.date_input("Fecha de Nacimiento")
+                genero = st.selectbox("Género", ['M', 'F', 'Otro'])
+                curp = st.text_input("CURP", max_chars=18)
+                rfc = st.text_input("RFC", max_chars=13)
             
             with col2:
-                telefono = st.text_input("Teléfono", max_chars=10, help="10 dígitos")
+                telefono = st.text_input("Teléfono", max_chars=15)
                 email = st.text_input("Email", max_chars=100)
                 direccion = st.text_area("Dirección", max_chars=200)
                 ciudad = st.text_input("Ciudad", max_chars=100)
                 estado_res = st.text_input("Estado", max_chars=50)
                 codigo_postal = st.text_input("Código Postal", max_chars=10)
-                nivel_estudio = st.selectbox("Nivel de Estudio", self.config.obtener('estados.nivel', []))
+                nivel_estudio = st.selectbox("Nivel de Estudio", NIVELES_ESTUDIO)
                 carrera = st.text_input("Carrera", max_chars=100)
                 semestre = st.number_input("Semestre", min_value=1, max_value=20, value=1)
-                turno = st.selectbox("Turno", self.config.obtener('estados.turno', []))
+                turno = st.selectbox("Turno", TURNOS)
                 fecha_ingreso = st.date_input("Fecha de Ingreso", value=datetime.now())
             
             # Botón de enviar
-            submit = st.form_submit_button("💾 Guardar Estudiante", type="primary")
-            
-            if submit:
+            if st.form_submit_button("💾 Guardar Estudiante"):
                 # Preparar datos
                 datos_estudiante = {
-                    'matricula': matricula.strip(),
-                    'nombre': nombre.strip(),
-                    'apellido_paterno': apellido_paterno.strip(),
-                    'apellido_materno': apellido_materno.strip() if apellido_materno else None,
+                    'matricula': matricula,
+                    'nombre': nombre,
+                    'apellido_paterno': apellido_paterno,
+                    'apellido_materno': apellido_materno,
                     'fecha_nacimiento': fecha_nacimiento.isoformat() if fecha_nacimiento else None,
                     'genero': genero,
-                    'curp': curp.strip() if curp else None,
-                    'rfc': rfc.strip() if rfc else None,
-                    'telefono': telefono.strip() if telefono else None,
-                    'email': email.strip() if email else None,
-                    'direccion': direccion.strip() if direccion else None,
-                    'ciudad': ciudad.strip() if ciudad else None,
-                    'estado': estado_res.strip() if estado_res else None,
-                    'codigo_postal': codigo_postal.strip() if codigo_postal else None,
+                    'curp': curp if curp else None,
+                    'rfc': rfc if rfc else None,
+                    'telefono': telefono if telefono else None,
+                    'email': email if email else None,
+                    'direccion': direccion if direccion else None,
+                    'ciudad': ciudad if ciudad else None,
+                    'estado': estado_res if estado_res else None,
+                    'codigo_postal': codigo_postal if codigo_postal else None,
                     'nivel_estudio': nivel_estudio,
-                    'carrera': carrera.strip() if carrera else None,
+                    'carrera': carrera if carrera else None,
                     'semestre': semestre,
                     'turno': turno,
                     'fecha_ingreso': fecha_ingreso.isoformat() if fecha_ingreso else None,
                     'estado_estudiante': 'Activo'
                 }
                 
-                # Crear estudiante
-                success, msg, estudiante_id = self.sistema.crear_estudiante(datos_estudiante)
+                # Validar datos
+                errores = self.validar_datos_estudiante(datos_estudiante)
                 
-                if success:
-                    st.success(f"✅ {msg} - ID: {estudiante_id}")
-                    st.rerun()
+                if errores:
+                    for error in errores:
+                        st.error(f"❌ {error}")
                 else:
-                    st.error(f"❌ {msg}")
+                    try:
+                        estudiante_id = self.agregar_estudiante(datos_estudiante)
+                        st.success(f"✅ Estudiante registrado exitosamente con ID: {estudiante_id}")
+                        
+                        # Preguntar si desea inscribirlo
+                        if st.checkbox("📝 ¿Inscribir al estudiante en el ciclo actual?", value=True):
+                            ciclo_actual = self.obtener_proximo_ciclo_escolar()
+                            try:
+                                self.inscribir_estudiante(estudiante_id, ciclo_actual, semestre)
+                                st.success(f"✅ Estudiante inscrito en ciclo {ciclo_actual}")
+                            except Exception as e:
+                                st.warning(f"⚠️ No se pudo inscribir: {e}")
+                        
+                        # Limpiar formulario
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error registrando estudiante: {e}")
     
     def _mostrar_busqueda_estudiantes(self):
         """Mostrar interfaz de búsqueda avanzada"""
@@ -2025,327 +1400,852 @@ class InterfazUsuario:
             valor = st.text_input("Valor a buscar:")
         
         if valor:
-            resultados = self.sistema.buscar_estudiante(criterio, valor)
+            resultados = self.buscar_estudiante(criterio, valor)
             
             if resultados:
                 st.success(f"✅ Encontrados {len(resultados)} estudiantes")
                 
                 df = pd.DataFrame(resultados)
                 columnas_mostrar = ['id', 'matricula', 'nombre', 'apellido_paterno', 
-                                  'apellido_materno', 'carrera', 'estado_estudiante', 'email']
+                                  'apellido_materno', 'carrera', 'estado_estudiante']
                 
                 columnas_existentes = [col for col in columnas_mostrar if col in df.columns]
-                st.dataframe(df[columnas_existentes], use_container_width=True, hide_index=True)
+                st.dataframe(df[columnas_existentes], use_container_width=True)
             else:
                 st.info("📭 No se encontraron estudiantes con esos criterios")
     
     def _mostrar_estadisticas_estudiantes(self):
         """Mostrar estadísticas de estudiantes"""
-        estadisticas = self.sistema.obtener_estadisticas_generales()
+        estadisticas = self.obtener_estadisticas_generales()
         
         st.subheader("📊 Estadísticas de Estudiantes")
         
+        # Distribución por nivel de estudio
+        if estadisticas.get('estudiantes_por_nivel'):
+            st.write("### 📚 Distribución por Nivel de Estudio")
+            df_niveles = pd.DataFrame(
+                list(estadisticas['estudiantes_por_nivel'].items()),
+                columns=['Nivel', 'Cantidad']
+            )
+            st.bar_chart(df_niveles.set_index('Nivel'))
+        
+        # Top carreras
+        if estadisticas.get('top_carreras'):
+            st.write("### 🏆 Carreras con más estudiantes")
+            df_carreras = pd.DataFrame(
+                list(estadisticas['top_carreras'].items()),
+                columns=['Carrera', 'Cantidad']
+            )
+            st.dataframe(df_carreras, use_container_width=True)
+        
+        # Exportar datos
+        st.write("### 📤 Exportar Datos")
         col1, col2 = st.columns(2)
         
         with col1:
-            st.metric("Total Estudiantes", estadisticas.get('total_estudiantes', 0))
-            st.metric("Estudiantes Activos", estadisticas.get('estudiantes_activos', 0))
-            st.metric("Promedio General", f"{estadisticas.get('promedio_general', 0):.2f}")
+            if st.button("📊 Generar Informe Excel (Estudiantes)"):
+                try:
+                    output, nombre = self.generar_informe_excel('estudiantes')
+                    st.download_button(
+                        label="⬇️ Descargar Informe",
+                        data=output,
+                        file_name=nombre,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Error generando informe: {e}")
         
         with col2:
-            st.metric("Total Egresados", estadisticas.get('total_egresados', 0))
-            st.metric("Egresados Contratados", estadisticas.get('egresados_contratados', 0))
+            if st.button("📊 Generar Informe Excel (Egresados)"):
+                try:
+                    output, nombre = self.generar_informe_excel('egresados')
+                    st.download_button(
+                        label="⬇️ Descargar Informe",
+                        data=output,
+                        file_name=nombre,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Error generando informe: {e}")
     
     def mostrar_gestion_inscripciones(self):
         """Mostrar interfaz de gestión de inscripciones"""
         st.title("📝 Gestión de Inscripciones")
         
         # Obtener ciclo escolar actual
-        ciclo_actual = "2024-2025"  # Esto se puede mejorar
-        st.info(f"🏫 Ciclo escolar sugerido: **{ciclo_actual}**")
+        ciclo_actual = self.obtener_proximo_ciclo_escolar()
+        st.info(f"🏫 Ciclo escolar actual: **{ciclo_actual}**")
         
-        tab1, tab2 = st.tabs(["📋 Inscripciones", "➕ Nueva Inscripción"])
+        # Pestañas
+        tab1, tab2, tab3 = st.tabs([
+            "📋 Inscripciones Actuales",
+            "➕ Nueva Inscripción",
+            "📊 Estadísticas por Ciclo"
+        ])
         
         with tab1:
-            inscripciones = self.sistema.obtener_inscripciones()
-            if inscripciones:
-                datos = []
-                for ins in inscripciones:
-                    datos.append({
-                        'ID': ins['id'],
-                        'Matrícula': ins['matricula'],
-                        'Estudiante': f"{ins['nombre']} {ins['apellido_paterno']}",
-                        'Ciclo': ins['ciclo_escolar'],
-                        'Semestre': ins['semestre'],
-                        'Estatus': ins['estatus']
-                    })
-                
-                df = pd.DataFrame(datos)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-            else:
-                st.info("📭 No hay inscripciones registradas")
+            self._mostrar_inscripciones_actuales(ciclo_actual)
         
         with tab2:
-            st.subheader("Nueva Inscripción")
+            self._mostrar_nueva_inscripcion(ciclo_actual)
+        
+        with tab3:
+            self._mostrar_estadisticas_inscripciones()
+    
+    def _mostrar_inscripciones_actuales(self, ciclo_actual: str):
+        """Mostrar inscripciones del ciclo actual"""
+        inscripciones = self.obtener_inscripciones(ciclo_escolar=ciclo_actual)
+        
+        if inscripciones:
+            st.subheader(f"Inscripciones del ciclo {ciclo_actual}")
             
-            # Obtener estudiantes activos
-            estudiantes = self.sistema.obtener_estudiantes('Activo', None, 50)
+            # Crear DataFrame
+            datos = []
+            for ins in inscripciones:
+                datos.append({
+                    'ID': ins['id'],
+                    'Matrícula': ins['matricula'],
+                    'Estudiante': f"{ins['nombre']} {ins['apellido_paterno']} {ins.get('apellido_materno', '')}",
+                    'Semestre': ins['semestre'],
+                    'Créditos': ins['creditos_inscritos'],
+                    'Promedio': ins['promedio_ciclo'],
+                    'Estatus': ins['estatus'],
+                    'Fecha': ins['fecha_inscripcion'][:10] if ins['fecha_inscripcion'] else ''
+                })
             
-            if estudiantes:
-                estudiante_opciones = {
-                    f"{e['id']} - {e['matricula']} - {e['nombre']} {e['apellido_paterno']}": e['id']
-                    for e in estudiantes
-                }
-                
-                estudiante_seleccionado = st.selectbox(
-                    "Seleccionar estudiante:",
-                    list(estudiante_opciones.keys())
+            df = pd.DataFrame(datos)
+            st.dataframe(df, use_container_width=True)
+            
+            # Opciones para actualizar promedio
+            st.subheader("Actualizar Promedios")
+            inscripcion_id = st.selectbox(
+                "Seleccionar inscripción:",
+                [f"{ins['id']} - {ins['matricula']} - {ins['nombre']}" for ins in inscripciones]
+            )
+            
+            if inscripcion_id:
+                ins_id = int(inscripcion_id.split(' - ')[0])
+                nuevo_promedio = st.number_input(
+                    "Nuevo promedio:", 
+                    min_value=0.0, 
+                    max_value=10.0, 
+                    value=0.0,
+                    step=0.1
                 )
                 
-                if estudiante_seleccionado:
-                    estudiante_id = estudiante_opciones[estudiante_seleccionado]
-                    ciclo_escolar = st.text_input("Ciclo escolar:", value=ciclo_actual)
-                    semestre = st.number_input("Semestre:", min_value=1, max_value=20, value=1)
-                    
-                    if st.button("📝 Inscribir Estudiante", type="primary"):
-                        success, msg, _ = self.sistema.inscribir_estudiante(
-                            estudiante_id, ciclo_escolar, semestre
+                if st.button("💾 Actualizar Promedio"):
+                    try:
+                        self.actualizar_promedio_inscripcion(ins_id, nuevo_promedio)
+                        st.success("✅ Promedio actualizado")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
+        else:
+            st.info(f"📭 No hay inscripciones para el ciclo {ciclo_actual}")
+    
+    def _mostrar_nueva_inscripcion(self, ciclo_actual: str):
+        """Mostrar formulario para nueva inscripción"""
+        st.subheader("Nueva Inscripción")
+        
+        # Listar estudiantes activos no inscritos en este ciclo
+        estudiantes_activos = self.obtener_estudiantes('Activo', None, 1000)
+        
+        # Filtrar estudiantes ya inscritos en este ciclo
+        inscripciones_actuales = self.obtener_inscripciones(ciclo_escolar=ciclo_actual)
+        ids_inscritos = {ins['estudiante_id'] for ins in inscripciones_actuales}
+        
+        estudiantes_disponibles = [
+            est for est in estudiantes_activos 
+            if est['id'] not in ids_inscritos
+        ]
+        
+        if not estudiantes_disponibles:
+            st.warning("⚠️ No hay estudiantes disponibles para inscripción en este ciclo")
+            return
+        
+        # Formulario
+        estudiante_opciones = {
+            f"{est['id']} - {est['matricula']} - {est['nombre']} {est['apellido_paterno']}": est['id']
+            for est in estudiantes_disponibles
+        }
+        
+        estudiante_seleccionado = st.selectbox(
+            "Seleccionar estudiante:",
+            list(estudiante_opciones.keys())
+        )
+        
+        if estudiante_seleccionado:
+            estudiante_id = estudiante_opciones[estudiante_seleccionado]
+            
+            # Obtener información del estudiante
+            estudiante = self.obtener_estudiante_por_id(estudiante_id)
+            
+            if estudiante:
+                st.write(f"**Información del estudiante:**")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"📚 Carrera: {estudiante.get('carrera', 'No especificada')}")
+                    st.write(f"🎓 Nivel: {estudiante.get('nivel_estudio', 'No especificado')}")
+                with col2:
+                    st.write(f"📅 Semestre actual: {estudiante.get('semestre', 'No especificado')}")
+                    st.write(f"⭐ Promedio: {estudiante.get('promedio', 'No registrado')}")
+                
+                # Datos de la inscripción
+                semestre_inscripcion = st.number_input(
+                    "Semestre a inscribir:", 
+                    min_value=1, 
+                    max_value=20, 
+                    value=estudiante.get('semestre', 1)
+                )
+                
+                creditos_inscritos = st.number_input(
+                    "Créditos a inscribir:", 
+                    min_value=0, 
+                    max_value=50, 
+                    value=0
+                )
+                
+                if st.button("📝 Realizar Inscripción"):
+                    try:
+                        self.inscribir_estudiante(
+                            estudiante_id, 
+                            ciclo_actual, 
+                            semestre_inscripcion, 
+                            creditos_inscritos
                         )
-                        if success:
-                            st.success(f"✅ {msg}")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
-            else:
-                st.warning("No hay estudiantes activos para inscribir")
+                        st.success(f"✅ Estudiante inscrito exitosamente en ciclo {ciclo_actual}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
+    
+    def _mostrar_estadisticas_inscripciones(self):
+        """Mostrar estadísticas de inscripciones"""
+        estadisticas = self.obtener_estadisticas_generales()
+        
+        if estadisticas.get('inscripciones_por_ciclo'):
+            st.subheader("📈 Inscripciones por Ciclo Escolar")
+            
+            df_ciclos = pd.DataFrame(
+                list(estadisticas['inscripciones_por_ciclo'].items()),
+                columns=['Ciclo Escolar', 'Inscripciones']
+            )
+            
+            st.dataframe(df_ciclos, use_container_width=True)
+            st.bar_chart(df_ciclos.set_index('Ciclo Escolar'))
+        else:
+            st.info("📭 No hay datos de inscripciones para mostrar")
     
     def mostrar_gestion_egresados(self):
         """Mostrar interfaz de gestión de egresados"""
         st.title("🎓 Gestión de Egresados")
         
-        tab1, tab2 = st.tabs(["📋 Lista de Egresados", "➕ Registrar Egresado"])
+        tab1, tab2, tab3 = st.tabs([
+            "📋 Lista de Egresados",
+            "➕ Registrar Egresado",
+            "💼 Contrataciones"
+        ])
         
         with tab1:
-            egresados = self.sistema.obtener_egresados()
-            if egresados:
-                datos = []
-                for eg in egresados:
-                    datos.append({
-                        'ID': eg['id'],
-                        'Matrícula': eg['matricula'],
-                        'Egresado': f"{eg['nombre']} {eg['apellido_paterno']}",
-                        'Carrera': eg['carrera'],
-                        'Título': eg['titulo_obtenido'],
-                        'Fecha Egreso': eg['fecha_egreso'][:10] if eg['fecha_egreso'] else ''
-                    })
-                
-                df = pd.DataFrame(datos)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-            else:
-                st.info("📭 No hay egresados registrados")
+            self._mostrar_lista_egresados()
         
         with tab2:
-            st.subheader("Registrar Egresado")
-            
-            # Listar estudiantes que podrían ser egresados
-            estudiantes = self.sistema.obtener_estudiantes('Activo', None, 50)
-            
-            if estudiantes:
-                estudiante_opciones = {
-                    f"{e['id']} - {e['matricula']} - {e['nombre']} {e['apellido_paterno']}": e['id']
-                    for e in estudiantes
-                }
-                
-                estudiante_seleccionado = st.selectbox(
-                    "Seleccionar estudiante:",
-                    list(estudiante_opciones.keys())
-                )
-                
-                if estudiante_seleccionado:
-                    estudiante_id = estudiante_opciones[estudiante_seleccionado]
-                    fecha_egreso = st.date_input("Fecha de Egreso", value=datetime.now())
-                    titulo_obtenido = st.text_input("Título Obtenido", max_chars=200)
-                    promedio_final = st.number_input("Promedio Final", min_value=0.0, max_value=10.0, value=8.0, step=0.1)
-                    
-                    if st.button("🎓 Registrar Egresado", type="primary"):
-                        success, msg, _ = self.sistema.registrar_egresado(
-                            estudiante_id,
-                            fecha_egreso.isoformat(),
-                            titulo_obtenido,
-                            promedio_final
-                        )
-                        if success:
-                            st.success(f"✅ {msg}")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
-            else:
-                st.warning("No hay estudiantes disponibles para registrar como egresados")
+            self._mostrar_registro_egresado()
+        
+        with tab3:
+            self._mostrar_gestion_contrataciones()
     
-    def mostrar_gestion_contrataciones(self):
-        """Mostrar interfaz de seguimiento de contratados"""
-        st.title("💼 Seguimiento de Contratados")
+    def _mostrar_lista_egresados(self):
+        """Mostrar lista de egresados"""
+        # Filtros
+        col1, col2 = st.columns(2)
         
-        contratados = self.sistema.obtener_contratados()
+        with col1:
+            filtro_titulo = st.text_input("Filtrar por título obtenido:")
         
-        if contratados:
+        with col2:
+            filtro_fecha = st.date_input("Filtrar desde fecha:", value=None)
+        
+        # Obtener egresados
+        egresados = self.obtener_egresados(
+            filtro_titulo if filtro_titulo else None,
+            filtro_fecha.isoformat() if filtro_fecha else None
+        )
+        
+        if egresados:
+            # Preparar datos para mostrar
             datos = []
-            for cont in contratados:
+            for eg in egresados:
                 datos.append({
-                    'ID': cont['id'],
-                    'Matrícula': cont['matricula'],
-                    'Contratado': f"{cont['nombre']} {cont['apellido_paterno']}",
-                    'Carrera': cont['carrera'],
-                    'Empresa': cont['empresa'],
-                    'Puesto': cont['puesto'],
-                    'Salario': f"${cont['salario_actual'] or cont['salario_inicial']:,.2f}" 
-                               if cont['salario_actual'] or cont['salario_inicial'] else 'No especificado'
+                    'ID': eg['id'],
+                    'Matrícula': eg['matricula'],
+                    'Egresado': f"{eg['nombre']} {eg['apellido_paterno']}",
+                    'Carrera': eg['carrera'],
+                    'Título': eg['titulo_obtenido'],
+                    'Promedio': eg['promedio_final'],
+                    'Fecha Egreso': eg['fecha_egreso'][:10] if eg['fecha_egreso'] else '',
+                    'Cédula': eg['numero_cedula']
                 })
             
             df = pd.DataFrame(datos)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, use_container_width=True)
             
-            # Exportar a Excel
-            if st.button("📊 Exportar a Excel"):
-                output, nombre = self.sistema.generar_informe_excel('contratados')
-                if output:
-                    st.download_button(
-                        label="⬇️ Descargar Excel",
-                        data=output,
-                        file_name=nombre,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+            # Estadísticas de egresados
+            st.subheader("📊 Estadísticas de Egresados")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Egresados", len(egresados))
+            
+            with col2:
+                if egresados:
+                    promedio_general = sum(eg['promedio_final'] or 0 for eg in egresados) / len(egresados)
+                    st.metric("Promedio General", f"{promedio_general:.2f}")
+            
+            with col3:
+                carreras_unicas = len(set(eg['carrera'] for eg in egresados if eg['carrera']))
+                st.metric("Carreras", carreras_unicas)
         else:
-            st.info("📭 No hay contrataciones registradas")
+            st.info("📭 No hay egresados registrados")
+    
+    def _mostrar_registro_egresado(self):
+        """Mostrar formulario para registrar egresado"""
+        st.subheader("Registrar Nuevo Egresado")
+        
+        # Listar estudiantes activos no egresados
+        estudiantes_activos = self.obtener_estudiantes('Activo', None, 1000)
+        
+        if not estudiantes_activos:
+            st.warning("⚠️ No hay estudiantes activos disponibles")
+            return
+        
+        estudiante_opciones = {
+            f"{est['id']} - {est['matricula']} - {est['nombre']} {est['apellido_paterno']}": est['id']
+            for est in estudiantes_activos
+        }
+        
+        estudiante_seleccionado = st.selectbox(
+            "Seleccionar estudiante:",
+            list(estudiante_opciones.keys())
+        )
+        
+        if estudiante_seleccionado:
+            estudiante_id = estudiante_opciones[estudiante_seleccionado]
+            
+            # Obtener información del estudiante
+            estudiante = self.obtener_estudiante_por_id(estudiante_id)
+            
+            if estudiante:
+                st.write(f"**Información del estudiante:**")
+                st.write(f"📚 Carrera: {estudiante.get('carrera', 'No especificada')}")
+                st.write(f"⭐ Promedio actual: {estudiante.get('promedio', 'No registrado')}")
+                
+                # Formulario de egreso
+                fecha_egreso = st.date_input("Fecha de Egreso *", value=datetime.now())
+                titulo_obtenido = st.text_input("Título Obtenido *", max_chars=200)
+                promedio_final = st.number_input(
+                    "Promedio Final *", 
+                    min_value=0.0, 
+                    max_value=10.0, 
+                    value=float(estudiante.get('promedio', 0.0) or 0.0),
+                    step=0.1
+                )
+                
+                campos_adicionales = st.expander("📄 Campos Adicionales")
+                with campos_adicionales:
+                    fecha_titulacion = st.date_input("Fecha de Titulación", value=None)
+                    numero_cedula = st.text_input("Número de Cédula", max_chars=50)
+                    institucion_titulacion = st.text_input("Institución de Titulación", max_chars=200)
+                
+                if st.button("🎓 Registrar Egresado"):
+                    if not titulo_obtenido:
+                        st.error("❌ El título obtenido es obligatorio")
+                    elif not fecha_egreso:
+                        st.error("❌ La fecha de egreso es obligatoria")
+                    else:
+                        try:
+                            self.registrar_egresado(
+                                estudiante_id,
+                                fecha_egreso.isoformat(),
+                                titulo_obtenido,
+                                promedio_final
+                            )
+                            st.success("✅ Egresado registrado exitosamente")
+                            
+                            # Actualizar campos adicionales si se proporcionaron
+                            # (Nota: Esto requeriría un método adicional para actualizar egresados)
+                            
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+    
+    def _mostrar_gestion_contrataciones(self):
+        """Mostrar gestión de contrataciones"""
+        st.subheader("💼 Gestión de Contrataciones")
+        
+        # Pestañas para contrataciones
+        tab1, tab2 = st.tabs(["📋 Contrataciones Registradas", "➕ Nueva Contratación"])
+        
+        with tab1:
+            contratados = self.obtener_contratados()
+            
+            if contratados:
+                # Preparar datos
+                datos = []
+                for cont in contratados:
+                    datos.append({
+                        'ID': cont['id'],
+                        'Matrícula': cont['matricula'],
+                        'Egresado': f"{cont['nombre']} {cont['apellido_paterno']}",
+                        'Carrera': cont['carrera'],
+                        'Empresa': cont['empresa'],
+                        'Puesto': cont['puesto'],
+                        'Salario': f"${cont['salario_actual'] or cont['salario_inicial']:,.2f}" 
+                                   if cont['salario_actual'] or cont['salario_inicial'] else 'No especificado',
+                        'Fecha Contratación': cont['fecha_contratacion'][:10] 
+                                             if cont['fecha_contratacion'] else ''
+                    })
+                
+                df = pd.DataFrame(datos)
+                st.dataframe(df, use_container_width=True)
+                
+                # Estadísticas
+                st.subheader("📊 Estadísticas de Contrataciones")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    empresas_unicas = len(set(cont['empresa'] for cont in contratados))
+                    st.metric("Empresas", empresas_unicas)
+                
+                with col2:
+                    tasa_contratacion = (len(contratados) / max(1, len(self.obtener_egresados()))) * 100
+                    st.metric("Tasa de Contratación", f"{tasa_contratacion:.1f}%")
+            else:
+                st.info("📭 No hay contrataciones registradas")
+        
+        with tab2:
+            # Formulario para nueva contratación
+            egresados = self.obtener_egresados()
+            
+            if not egresados:
+                st.warning("⚠️ No hay egresados registrados")
+            else:
+                egresado_opciones = {
+                    f"{eg['id']} - {eg['matricula']} - {eg['nombre']} {eg['apellido_paterno']}": eg['id']
+                    for eg in egresados
+                }
+                
+                egresado_seleccionado = st.selectbox(
+                    "Seleccionar egresado:",
+                    list(egresado_opciones.keys())
+                )
+                
+                if egresado_seleccionado:
+                    egresado_id = egresado_opciones[egresado_seleccionado]
+                    
+                    # Información del egresado
+                    egresado_info = next((eg for eg in egresados if eg['id'] == egresado_id), None)
+                    
+                    if egresado_info:
+                        st.write(f"**Información del egresado:**")
+                        st.write(f"🎓 Título: {egresado_info['titulo_obtenido']}")
+                        st.write(f"⭐ Promedio: {egresado_info['promedio_final']}")
+                        
+                        # Formulario de contratación
+                        empresa = st.text_input("Empresa *", max_chars=200)
+                        puesto = st.text_input("Puesto", max_chars=100)
+                        fecha_contratacion = st.date_input("Fecha de Contratación", value=datetime.now())
+                        salario_inicial = st.number_input("Salario Inicial", min_value=0.0, value=0.0, step=1000.0)
+                        tipo_contrato = st.selectbox(
+                            "Tipo de Contrato",
+                            ['Indeterminado', 'Temporal', 'Por Obra', 'Honorarios', 'Otro']
+                        )
+                        
+                        if st.button("💼 Registrar Contratación"):
+                            if not empresa:
+                                st.error("❌ La empresa es obligatoria")
+                            else:
+                                try:
+                                    self.registrar_contratacion(
+                                        egresado_id,
+                                        empresa,
+                                        puesto,
+                                        fecha_contratacion.isoformat(),
+                                        salario_inicial,
+                                        tipo_contrato
+                                    )
+                                    st.success("✅ Contratación registrada exitosamente")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Error: {e}")
     
     def mostrar_configuracion_sistema(self):
         """Mostrar configuración del sistema"""
         st.title("⚙️ Configuración del Sistema")
         
-        tab1, tab2 = st.tabs(["📊 Estado del Sistema", "💾 Backup"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📊 Estado del Sistema",
+            "🔄 Sincronización",
+            "💾 Backup",
+            "🔧 Configuración"
+        ])
         
         with tab1:
             self._mostrar_estado_sistema()
         
         with tab2:
+            self._mostrar_sincronizacion()
+        
+        with tab3:
             self._mostrar_backup()
+        
+        with tab4:
+            self._mostrar_configuracion()
     
     def _mostrar_estado_sistema(self):
         """Mostrar estado actual del sistema"""
         st.subheader("📊 Estado del Sistema")
         
-        estado = self.sistema.obtener_estado_sistema()
-        estado_ssh = self.sistema.obtener_estado_ssh()
+        # Información de conexión SSH
+        st.write("### 🔗 Estado de Conexión SSH")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if self.estado.estado.get('ssh_conectado'):
+                st.success("✅ Conectado al servidor remoto")
+                st.write(f"**Servidor:** {self.ssh_config.get('host', 'Desconocido')}")
+                st.write(f"**Usuario:** {self.ssh_config.get('username', 'Desconocido')}")
+            else:
+                st.error("❌ Desconectado del servidor remoto")
+                if self.estado.estado.get('ssh_error'):
+                    st.error(f"**Error:** {self.estado.estado['ssh_error']}")
+        
+        with col2:
+            if self.estado.estado.get('ultima_sincronizacion'):
+                fecha_sync = datetime.fromisoformat(self.estado.estado['ultima_sincronizacion'])
+                st.write(f"**Última sincronización:** {fecha_sync.strftime('%Y-%m-%d %H:%M:%S')}")
+            else:
+                st.warning("⚠️ Nunca sincronizado")
+            
+            if self.estado.estado.get('ultima_verificacion'):
+                fecha_ver = datetime.fromisoformat(self.estado.estado['ultima_verificacion'])
+                st.write(f"**Última verificación:** {fecha_ver.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Estadísticas de la base de datos
+        st.write("### 🗄️ Estadísticas de Base de Datos")
+        
+        try:
+            cursor = self.conexion_local.cursor()
+            
+            # Contar registros por tabla
+            tablas = ['estudiantes', 'inscritos', 'egresados', 'contratados', 'usuarios']
+            for tabla in tablas:
+                cursor.execute(f"SELECT COUNT(*) FROM {tabla}")
+                count = cursor.fetchone()[0]
+                st.write(f"**{tabla.capitalize()}:** {count} registros")
+            
+        except Exception as e:
+            st.error(f"❌ Error obteniendo estadísticas: {e}")
+        
+        # Información de migraciones
+        st.write("### 🔄 Estadísticas de Migraciones")
+        estadisticas_mig = self.estado.obtener_estadisticas()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Migraciones Exitosas", estadisticas_mig.get('exitosas', 0))
+        with col2:
+            st.metric("Migraciones Fallidas", estadisticas_mig.get('fallidas', 0))
+        with col3:
+            st.metric("Backups Realizados", self.estado.estado.get('backups_realizados', 0))
+    
+    def _mostrar_sincronizacion(self):
+        """Mostrar opciones de sincronización"""
+        st.subheader("🔄 Sincronización con Servidor")
+        
+        st.info("""
+        La sincronización descarga la base de datos más reciente del servidor remoto
+        y sube los cambios locales. Esto asegura que siempre trabajes con la información
+        más actualizada.
+        """)
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.write("**Estado general:**", estado['aplicacion']['estado'].capitalize())
-            st.write("**Modo de operación:**", estado['aplicacion']['modo'].capitalize())
-            st.write("**Versión:**", estado['aplicacion']['version'])
-            
-            if estado_ssh['conectado']:
-                st.success(f"✅ SSH Conectado a {estado_ssh['host']}")
-            else:
-                st.error("❌ SSH Desconectado")
+            if st.button("📥 Sincronizar desde Servidor", type="primary"):
+                with st.spinner("🔄 Sincronizando..."):
+                    if self.sincronizar_con_servidor():
+                        st.success("✅ Sincronización completada")
+                        st.rerun()
+                    else:
+                        st.error("❌ Error en sincronización")
         
         with col2:
-            st.write("**Sesión iniciada:**", estado['sesion']['iniciada'])
-            st.write("**Duración de sesión:**", estado['sesion']['duracion'])
-            st.write("**Estudiantes esta sesión:**", estado['estadisticas']['estudiantes_sesion'])
-            
-            if estado['aplicacion']['ultima_sincronizacion']:
-                st.write("**Última sincronización:**", estado['aplicacion']['ultima_sincronizacion'].strftime('%Y-%m-%d %H:%M'))
+            if st.button("🔼 Subir Cambios al Servidor"):
+                with st.spinner("🔼 Subiendo cambios..."):
+                    if self.subir_cambios_al_servidor():
+                        st.success("✅ Cambios subidos exitosamente")
+                    else:
+                        st.error("❌ Error subiendo cambios")
+        
+        # Información de conexión
+        st.write("### 🔗 Configuración de Conexión")
+        st.json({
+            "host": self.ssh_config.get('host'),
+            "port": self.ssh_config.get('port'),
+            "username": self.ssh_config.get('username'),
+            "remote_dir": self.ssh_config.get('remote_dir'),
+            "escuela_db": self.rutas.get('escuela_db'),
+            "inscritos_db": self.rutas.get('inscritos_db')
+        })
     
     def _mostrar_backup(self):
         """Mostrar opciones de backup"""
         st.subheader("💾 Sistema de Backup")
         
-        # Información sobre backups
         st.info("""
-        **Nota sobre backups:**
-        - Los backups se guardan localmente en el directorio `backups/`
-        - Se recomienda descargar manualmente los backups importantes
-        - En modo nube, los backups son temporales para la sesión actual
+        Los backups se crean automáticamente antes de operaciones críticas.
+        También puedes crear backups manuales en cualquier momento.
         """)
         
         # Crear backup manual
         if st.button("💾 Crear Backup Manual", type="primary"):
-            st.info("Funcionalidad de backup en desarrollo")
+            with st.spinner("Creando backup..."):
+                if self.crear_backup():
+                    st.success("✅ Backup creado exitosamente")
+                else:
+                    st.error("❌ Error creando backup")
+        
+        # Listar backups existentes
+        st.write("### 📦 Backups Existentes")
+        backup_dir = self.config.get('backup_dir', 'backups_escuela')
+        
+        if os.path.exists(backup_dir):
+            backups = []
+            for file in os.listdir(backup_dir):
+                if file.startswith('escuela_backup_'):
+                    file_path = os.path.join(backup_dir, file)
+                    size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                    mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    backups.append({
+                        'Archivo': file,
+                        'Tamaño (MB)': f"{size_mb:.2f}",
+                        'Fecha': mtime.strftime('%Y-%m-%d %H:%M:%S')
+                    })
+            
+            if backups:
+                df_backups = pd.DataFrame(backups)
+                st.dataframe(df_backups, use_container_width=True)
+                
+                # Opción para restaurar backup
+                backup_seleccionado = st.selectbox(
+                    "Seleccionar backup para restaurar:",
+                    backups
+                )
+                
+                if st.button("🔄 Restaurar Backup Seleccionado"):
+                    st.warning("⚠️ Esta función está en desarrollo")
+            else:
+                st.info("📭 No hay backups creados")
+        else:
+            st.info("📭 Directorio de backups no existe")
+    
+    def _mostrar_configuracion(self):
+        """Mostrar configuración del sistema"""
+        st.subheader("🔧 Configuración del Sistema")
+        
+        # Configuración general
+        with st.expander("⚙️ Configuración General", expanded=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                nuevo_page_size = st.number_input(
+                    "Tamaño de página (registros):",
+                    min_value=10,
+                    max_value=200,
+                    value=PAGE_SIZE
+                )
+                
+                nuevo_cache_ttl = st.number_input(
+                    "TTL de caché (segundos):",
+                    min_value=60,
+                    max_value=3600,
+                    value=CACHE_TTL
+                )
+            
+            with col2:
+                auto_sync = st.checkbox(
+                    "Sincronización automática al iniciar",
+                    value=self.config.get('sync_on_start', True)
+                )
+                
+                auto_connect = st.checkbox(
+                    "Conexión automática SSH",
+                    value=self.config.get('auto_connect', True)
+                )
+            
+            if st.button("💾 Guardar Configuración"):
+                # Aquí se guardaría la configuración en un archivo
+                st.success("✅ Configuración guardada (simulado)")
+        
+        # Configuración de backup
+        with st.expander("💾 Configuración de Backup"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                max_backups = st.number_input(
+                    "Máximo de backups a mantener:",
+                    min_value=1,
+                    max_value=50,
+                    value=self.config.get('backup', {}).get('max_backups', 10)
+                )
+                
+                min_space = st.number_input(
+                    "Espacio mínimo requerido (MB):",
+                    min_value=10,
+                    max_value=1000,
+                    value=self.config.get('backup', {}).get('min_disk_space_mb', 100)
+                )
+            
+            with col2:
+                backup_enabled = st.checkbox(
+                    "Habilitar sistema de backup",
+                    value=self.config.get('backup', {}).get('enabled', True)
+                )
+                
+                auto_backup = st.checkbox(
+                    "Backup automático antes de migración",
+                    value=self.config.get('backup', {}).get('auto_backup_before_migration', True)
+                )
+        
+        # Limpiar caché
+        with st.expander("🗑️ Mantenimiento"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🧹 Limpiar Caché"):
+                    self.limpiar_cache()
+                    st.success("✅ Caché limpiado")
+            
+            with col2:
+                if st.button("🔄 Reinicializar Base de Datos"):
+                    if st.checkbox("¿Confirmar reinicialización? Esto eliminará todos los datos locales."):
+                        try:
+                            self._inicializar_base_datos()
+                            st.success("✅ Base de datos reinicializada")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
 
 # =============================================================================
-# FUNCIÓN PRINCIPAL MODIFICADA
+# FUNCIÓN PRINCIPAL DE LA APLICACIÓN
 # =============================================================================
 
 def main():
     """Función principal de la aplicación"""
-    # Configurar página
+    
+    # Configurar página de Streamlit
     st.set_page_config(
-        page_title="Sistema de Gestión Escolar",
-        page_icon="🏫",
+        page_title=APP_TITLE,
+        page_icon=APP_ICON,
         layout="wide",
         initial_sidebar_state="expanded"
     )
     
     # Inicializar sistema
-    if 'sistema' not in st.session_state:
-        with st.spinner("🚀 Inicializando sistema..."):
-            try:
-                st.session_state.sistema = SistemaGestionEscolar()
-                st.session_state.ui = InterfazUsuario(st.session_state.sistema)
-            except Exception as e:
-                st.error(f"❌ Error crítico al inicializar el sistema: {e}")
-                st.exception(e)
-                st.stop()
-    
-    sistema = st.session_state.sistema
-    ui = st.session_state.ui
-    
-    # Mostrar barra lateral y obtener opción
     try:
-        opcion = ui.mostrar_barra_lateral()
+        sistema = SistemaGestionEscolar()
+        logger.info("✅ Sistema de Gestión Escolar inicializado")
     except Exception as e:
-        st.error(f"❌ Error en barra lateral: {e}")
-        opcion = "🏠 Panel de Control"
+        st.error(f"❌ Error crítico al inicializar el sistema: {e}")
+        logger.error(f"❌ Error inicializando sistema: {e}")
+        return
     
-    # Mostrar contenido según opción
-    try:
-        if opcion == "🏠 Panel de Control":
-            ui.mostrar_panel_control()
+    # Barra lateral con navegación
+    with st.sidebar:
+        st.image("https://cdn-icons-png.flaticon.com/512/2784/2784449.png", width=100)
+        st.title(APP_TITLE)
+        st.markdown("---")
         
-        elif opcion == "👨‍🎓 Gestión de Estudiantes":
-            ui.mostrar_gestion_estudiantes()
+        # Estado del sistema
+        st.subheader("📊 Estado del Sistema")
+        if sistema.estado.esta_inicializada():
+            st.success("✅ Sistema listo")
+            if sistema.estado.estado.get('ssh_conectado'):
+                st.success("🔗 Conectado al servidor")
+            else:
+                st.error("❌ Desconectado del servidor")
+        else:
+            st.error("❌ Sistema no inicializado")
         
-        elif opcion == "📝 Gestión de Inscripciones":
-            ui.mostrar_gestion_inscripciones()
+        st.markdown("---")
         
-        elif opcion == "🎓 Gestión de Egresados":
-            ui.mostrar_gestion_egresados()
+        # Navegación
+        st.subheader("🧭 Navegación")
+        opcion = st.radio(
+            "Seleccionar módulo:",
+            [
+                "🏠 Panel de Control",
+                "👨‍🎓 Gestión de Estudiantes",
+                "📝 Gestión de Inscripciones",
+                "🎓 Gestión de Egresados",
+                "💼 Seguimiento de Contratados",
+                "⚙️ Configuración del Sistema"
+            ]
+        )
         
-        elif opcion == "💼 Seguimiento de Contratados":
-            ui.mostrar_gestion_contrataciones()
+        st.markdown("---")
         
-        elif opcion == "⚙️ Configuración del Sistema":
-            ui.mostrar_configuracion_sistema()
+        # Acciones rápidas
+        st.subheader("⚡ Acciones Rápidas")
         
-        elif opcion == "🔄 Sincronización":
-            ui.mostrar_panel_sincronizacion()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Sincronizar"):
+                with st.spinner("Sincronizando..."):
+                    if sistema.sincronizar_con_servidor():
+                        st.success("✅ Sincronizado")
+                        st.rerun()
+                    else:
+                        st.error("❌ Error")
+        
+        with col2:
+            if st.button("💾 Backup"):
+                with st.spinner("Creando backup..."):
+                    if sistema.crear_backup():
+                        st.success("✅ Backup creado")
+                    else:
+                        st.error("❌ Error")
+        
+        st.markdown("---")
+        
+        # Información del sistema
+        st.caption(f"Versión: 3.0")
+        st.caption(f"Última sync: {sistema.estado.estado.get('ultima_sincronizacion', 'Nunca')}")
+        st.caption(f"Estudiantes: {sistema.obtener_estadisticas_generales().get('total_estudiantes', 0)}")
     
-    except Exception as e:
-        st.error(f"❌ Error en la aplicación: {e}")
-        st.exception(e)
+    # Contenido principal basado en la selección
+    if opcion == "🏠 Panel de Control":
+        sistema.mostrar_panel_control()
+    
+    elif opcion == "👨‍🎓 Gestión de Estudiantes":
+        sistema.mostrar_gestion_estudiantes()
+    
+    elif opcion == "📝 Gestión de Inscripciones":
+        sistema.mostrar_gestion_inscripciones()
+    
+    elif opcion == "🎓 Gestión de Egresados":
+        sistema.mostrar_gestion_egresados()
+    
+    elif opcion == "💼 Seguimiento de Contratados":
+        # Nota: Esta función podría integrarse en egresados o ser separada
+        sistema.mostrar_gestion_egresados()  # Por ahora usa la misma
+    
+    elif opcion == "⚙️ Configuración del Sistema":
+        sistema.mostrar_configuracion_sistema()
     
     # Pie de página
     st.markdown("---")
-    
-    try:
-        estado_ssh = sistema.obtener_estado_ssh()
-        estado_conexion = "✅ Conectado" if estado_ssh['conectado'] else "❌ Desconectado"
-        host_info = f" a {estado_ssh['host']}" if estado_ssh['host'] else ""
-        
-        st.caption(f"© 2024 Sistema de Gestión Escolar v{sistema.config.obtener('app.version')} | SSH: {estado_conexion}{host_info}")
-    except:
-        st.caption(f"© 2024 Sistema de Gestión Escolar")
+    st.caption(f"© 2024 Sistema de Gestión Escolar v3.0 | Base de datos: {sistema.db_local_path}")
 
 # =============================================================================
 # EJECUCIÓN
