@@ -1,7 +1,7 @@
 """
 shared_config.py - Configuración compartida para todos los sistemas
 Módulo centralizado para evitar duplicación y conflictos
-Versión corregida para Streamlit Cloud
+Versión corregida para Streamlit Cloud - Error de socket resuelto
 """
 
 import os
@@ -18,6 +18,9 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 
 # Mover importaciones al nivel superior para evitar problemas de scope
+HAS_TOMLLIB = False
+tomllib = None
+
 try:
     import tomllib  # Python 3.11+
     HAS_TOMLLIB = True
@@ -28,23 +31,6 @@ except ImportError:
     except ImportError:
         HAS_TOMLLIB = False
         tomllib = None
-
-# Importar paramiko y socket al nivel superior para evitar problemas de scope
-try:
-    import paramiko
-    import socket
-    HAS_PARAMIKO = True
-except ImportError:
-    HAS_PARAMIKO = False
-    paramiko = None
-    socket = None
-
-try:
-    import psutil
-    HAS_PSUTIL = True
-except ImportError:
-    HAS_PSUTIL = False
-    psutil = None
 
 # =============================================================================
 # CONFIGURACIÓN DE LOGGING COMPARTIDO
@@ -483,7 +469,7 @@ class EstadoPersistenteBase:
         return self.estado.get('estadisticas_migracion', {})
 
 # =============================================================================
-# GESTOR DE CONEXIÓN SSH COMPARTIDO - CORREGIDO
+# GESTOR DE CONEXIÓN SSH COMPARTIDO - CORREGIDO (ERROR DE SOCKET RESUELTO)
 # =============================================================================
 
 class GestorSSHCompartido:
@@ -507,23 +493,20 @@ class GestorSSHCompartido:
             self.logger = SistemaLogging.obtener_logger('ssh_shared')
             self.ssh_config = self.config.get('ssh', {})
             
-            if not HAS_PARAMIKO:
-                self.logger.warning("⚠️ paramiko no está instalado. Instalar con: pip install paramiko")
-                self.ssh_config['enabled'] = False
-            
-            if not self.ssh_config.get('enabled', True):
-                self.logger.info("SSH deshabilitado en configuración")
-                
         except Exception as e:
             self.logger = SistemaLogging.obtener_logger('ssh_shared')
             self.logger.error(f"Error inicializando SSH: {e}")
             self.ssh_config = {'enabled': False}
     
     def conectar(self) -> bool:
-        """Establecer conexión SSH con el servidor remoto"""
-        # Verificar que paramiko esté disponible
-        if not HAS_PARAMIKO or paramiko is None or socket is None:
-            self.logger.error("❌ paramiko o socket no están disponibles")
+        """Establecer conexión SSH con el servidor remoto - CORREGIDO ERROR DE SOCKET"""
+        # IMPORTAR socket y paramiko DENTRO de la función para evitar problemas de scope
+        try:
+            import paramiko
+            import socket  # ← Importado dentro de la función
+        except ImportError as e:
+            self.logger.error(f"❌ Librerías SSH no disponibles: {e}")
+            self.logger.info("⚠️ Instalar con: pip install paramiko")
             return False
         
         try:
@@ -564,7 +547,7 @@ class GestorSSHCompartido:
             self.logger.info(f"✅ Conexión SSH establecida a {self.ssh_config['host']}")
             return True
             
-        except socket.timeout:
+        except socket.timeout:  # ← AHORA socket está en el scope correcto
             self.logger.error(f"❌ Timeout conectando a {self.ssh_config.get('host', 'desconocido')}")
             return False
         except paramiko.AuthenticationException:
@@ -643,11 +626,8 @@ class UtilidadesCompartidas:
     @staticmethod
     def verificar_espacio_disco(ruta: str, espacio_minimo_mb: int = 100) -> Tuple[bool, float]:
         """Verificar espacio disponible en disco"""
-        if not HAS_PSUTIL:
-            print("⚠️ psutil no está instalado. Instalar con: pip install psutil")
-            return True, 0  # Asumir que hay espacio
-        
         try:
+            import psutil
             stat = psutil.disk_usage(ruta)
             espacio_disponible_mb = stat.free / (1024 * 1024)
             
@@ -656,6 +636,9 @@ class UtilidadesCompartidas:
             
             return True, espacio_disponible_mb
             
+        except ImportError:
+            print("⚠️ psutil no está instalado. Instalar con: pip install psutil")
+            return True, 0  # Asumir que hay espacio
         except Exception as e:
             print(f"⚠️ Error verificando espacio en disco: {e}")
             return True, 0  # Asumir que hay espacio
@@ -786,9 +769,6 @@ def inicializar_sistema_rapido(nombre_sistema: str = 'escuela') -> Tuple[bool, s
         # 1. Verificar imports
         if not HAS_TOMLLIB:
             return False, "tomllib/tomli no está instalado"
-        
-        if not HAS_PARAMIKO:
-            return False, "paramiko no está instalado (necesario para SSH)"
         
         # 2. Cargar configuración
         config = CargadorConfiguracion.obtener_config_sistema(nombre_sistema)
