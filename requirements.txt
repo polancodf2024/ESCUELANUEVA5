@@ -7,5 +7,4 @@ tomli==2.0.1
 openpyxl==3.1.2
 sqlalchemy==2.0.35
 altair==6.0.0
-protobuf>=4.21.0  # ← CAMBIADO: versión flexible
-sqlite3  # Ya incluido en Python
+protobuf>=4.21.0
