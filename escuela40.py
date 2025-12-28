@@ -2515,7 +2515,85 @@ class SistemaGestionEscolar:
 
 def main():
     """Función principal de la aplicación"""
-    
+
     # Configurar página de Streamlit
     st.set_page_config(
-        page_title=APP
+        page_title=APP_TITLE,
+        page_icon=APP_ICON,
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # Inicializar sistema
+    try:
+        sistema = SistemaGestionEscolar()
+        logger.info("✅ Sistema inicializado para interfaz web")
+    except Exception as e:
+        logger.error(f"❌ Error crítico inicializando sistema: {e}")
+        st.error(f"❌ Error crítico: {e}")
+        st.info("🔄 Por favor, recarga la página o contacta al administrador")
+        st.stop()
+
+    # Barra lateral
+    with st.sidebar:
+        st.image("https://img.icons8.com/color/96/000000/school.png", width=80)
+        st.title("🏫 Gestión Escolar")
+        st.divider()
+
+        # Menú de navegación
+        st.subheader("📋 Navegación")
+        opcion = st.radio(
+            "Selecciona una opción:",
+            [
+                "📊 Panel de Control",
+                "👨‍🎓 Gestión de Estudiantes",
+                "📝 Gestión de Inscripciones",
+                "🎓 Gestión de Egresados",
+                "⚙️ Configuración"
+            ]
+        )
+
+        st.divider()
+
+        # Estado del sistema
+        st.subheader("⚡ Estado del Sistema")
+
+        if sistema.estado and sistema.estado.esta_inicializada():
+            st.success("✅ Sistema OK")
+        else:
+            st.error("❌ Sistema no inicializado")
+
+        if sistema.ssh_config.get('enabled', False):
+            if sistema.estado and sistema.estado.estado.get('ssh_conectado'):
+                st.success("🔗 Conectado")
+            else:
+                st.error("❌ Desconectado")
+
+        st.divider()
+
+        # Acciones rápidas
+        st.subheader("🚀 Acciones Rápidas")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Sincronizar", use_container_width=True):
+                with st.spinner("Sincronizando..."):
+                    if sistema.sincronizar_con_servidor():
+                        st.success("✅ Sincronizado")
+                    else:
+                        st.error("❌ Error")
+                    time.sleep(1)
+                    st.rerun()
+
+        with col2:
+            if st.button("💾 Backup", use_container_width=True):
+                with st.spinner("Creando backup..."):
+                    if sistema.crear_backup():
+                        st.success("✅ Backup creado")
+                    else:
+                        st.warning("⚠️ Error backup")
+                    time.sleep(1)
+
+        st.divider()
+
+
