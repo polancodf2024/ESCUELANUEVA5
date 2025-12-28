@@ -1,16 +1,23 @@
 """
 shared_config.py - Configuración compartida para todos los sistemas
 Módulo centralizado para evitar duplicación y conflictos
+Versión corregida para Streamlit Cloud
 """
 
 import os
 import sys
 import logging
-from typing import Dict, Any, Optional
+import json
+from datetime import datetime
+from typing import Dict, Any, Optional, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
-# Intentar importar tomllib (Python 3.11+) o tomli (Python < 3.11)
+# =============================================================================
+# IMPORTACIONES CONDICIONALES - CORREGIDO
+# =============================================================================
+
+# Mover importaciones al nivel superior para evitar problemas de scope
 try:
     import tomllib  # Python 3.11+
     HAS_TOMLLIB = True
@@ -20,8 +27,24 @@ except ImportError:
         HAS_TOMLLIB = True
     except ImportError:
         HAS_TOMLLIB = False
-        print("❌ ERROR CRÍTICO: No se encontró tomllib o tomli. Instalar con: pip install tomli")
-        sys.exit(1)
+        tomllib = None
+
+# Importar paramiko y socket al nivel superior para evitar problemas de scope
+try:
+    import paramiko
+    import socket
+    HAS_PARAMIKO = True
+except ImportError:
+    HAS_PARAMIKO = False
+    paramiko = None
+    socket = None
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    psutil = None
 
 # =============================================================================
 # CONFIGURACIÓN DE LOGGING COMPARTIDO
@@ -43,11 +66,12 @@ class SistemaLogging:
     def _crear_logger(nombre_sistema: str, archivo_log: str = None):
         """Crear logger específico para un sistema"""
         logger = logging.getLogger(f"escuela.{nombre_sistema}")
-        logger.setLevel(logging.DEBUG)
         
         # Evitar duplicación de handlers
         if logger.handlers:
             return logger
+        
+        logger.setLevel(logging.DEBUG)
         
         # Formato detallado
         formatter = logging.Formatter(
@@ -60,12 +84,21 @@ class SistemaLogging:
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)
         
-        # Handler para archivo
+        # Handler para archivo (solo si se especifica y es posible)
         if archivo_log:
-            file_handler = logging.FileHandler(archivo_log, encoding='utf-8')
-            file_handler.setLevel(logging.DEBUG)
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
+            try:
+                # En Streamlit Cloud, intentar crear en directorio temporal
+                import tempfile
+                temp_dir = tempfile.gettempdir()
+                log_path = os.path.join(temp_dir, archivo_log)
+                
+                file_handler = logging.FileHandler(log_path, encoding='utf-8')
+                file_handler.setLevel(logging.DEBUG)
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
+            except Exception as e:
+                print(f"⚠️ No se pudo crear archivo de log {archivo_log}: {e}")
+                # Continuar solo con consola
         
         logger.addHandler(console_handler)
         return logger
@@ -83,14 +116,18 @@ class CargadorConfiguracion:
     def cargar_configuracion(cls):
         """Cargar configuración una sola vez y cachearla"""
         if cls._config_cache is None:
-            cls._config_cache = cls._cargar_desde_archivo()
+            try:
+                cls._config_cache = cls._cargar_desde_archivo()
+            except Exception as e:
+                print(f"⚠️ Error cargando configuración: {e}")
+                cls._config_cache = cls._configuracion_por_defecto()
         return cls._config_cache
     
     @staticmethod
     def _cargar_desde_archivo() -> Dict[str, Any]:
         """Cargar configuración desde secrets.toml"""
-        if not HAS_TOMLLIB:
-            raise ImportError("tomllib/tomli no está disponible")
+        if not HAS_TOMLLIB or tomllib is None:
+            raise ImportError("tomllib/tomli no está disponible. Instalar con: pip install tomli")
         
         # Buscar el archivo secrets.toml en posibles ubicaciones
         posibles_rutas = [
@@ -98,7 +135,8 @@ class CargadorConfiguracion:
             "secrets.toml",
             "./.streamlit/secrets.toml",
             "../.streamlit/secrets.toml",
-            "/mount/src/escuelanueva/.streamlit/secrets.toml",
+            "/mount/src/escuelanueva5/.streamlit/secrets.toml",
+            "/mount/src/escuelanueva5/secrets.toml",
             "config/secrets.toml"
         ]
         
@@ -106,35 +144,178 @@ class CargadorConfiguracion:
         for ruta in posibles_rutas:
             if os.path.exists(ruta):
                 ruta_encontrada = ruta
+                print(f"✅ Encontrado secrets.toml en: {ruta}")
                 break
         
         if not ruta_encontrada:
-            raise FileNotFoundError("No se encontró secrets.toml en ninguna ubicación")
+            raise FileNotFoundError("No se encontró secrets.toml. Asegúrate de configurarlo en Streamlit Cloud Secrets.")
         
         # Leer el archivo
         with open(ruta_encontrada, 'rb') as f:
-            return tomllib.load(f)
+            config = tomllib.load(f)
+        
+        print(f"✅ Configuración cargada desde {ruta_encontrada}")
+        return config
+    
+    @staticmethod
+    def _configuracion_por_defecto() -> Dict[str, Any]:
+        """Configuración por defecto cuando no hay secrets.toml"""
+        print("⚠️ Usando configuración por defecto (modo local sin SSH)")
+        
+        return {
+            'ssh': {
+                'enabled': False,
+                'host': '',
+                'port': 22,
+                'username': '',
+                'password': '',
+                'timeout': 30
+            },
+            'remote_paths': {},
+            'timeouts': {
+                'ssh_connect': 30,
+                'ssh_command': 60,
+                'sftp_transfer': 300,
+                'db_download': 180,
+                'db_upload': 180
+            },
+            'backup': {
+                'enabled': False,
+                'max_backups': 10,
+                'min_disk_space_mb': 100,
+                'auto_backup_before_migration': True
+            },
+            'system': {
+                'supervisor_mode': False,
+                'debug_mode': True
+            },
+            'smtp': {
+                'server': '',
+                'port': 587,
+                'email_user': '',
+                'email_password': '',
+                'notification_email': ''
+            },
+            'escuela': {
+                'estado_file': 'estado_escuela.json',
+                'log_file': 'escuela_detallado.log',
+                'migrations_log': 'escuela_migrations.json',
+                'backup_dir': 'backups_escuela',
+                'sync_on_start': False,
+                'auto_connect': False,
+                'page_size': 50,
+                'cache_ttl': 300
+            }
+        }
     
     @classmethod
     def obtener_config_sistema(cls, nombre_sistema: str) -> Dict[str, Any]:
         """Obtener configuración específica para un sistema"""
         config = cls.cargar_configuracion()
         
-        # Configuración base común
+        # Configuración base común (siempre disponible)
         config_base = {
-            'smtp': config.get('smtp', {}),
             'ssh': config.get('ssh', {}),
             'remote_paths': config.get('remote_paths', {}),
             'timeouts': config.get('timeouts', {}),
             'backup': config.get('backup', {}),
-            'system': config.get('system', {})
+            'system': config.get('system', {}),
+            'smtp': config.get('smtp', {})
         }
         
         # Configuración específica del sistema
         if nombre_sistema in config:
-            config_base.update(config[nombre_sistema])
+            sistema_config = config[nombre_sistema]
+            # Si es un diccionario, fusionarlo
+            if isinstance(sistema_config, dict):
+                config_base.update(sistema_config)
+            else:
+                print(f"⚠️ Configuración para {nombre_sistema} no es un diccionario, ignorando")
+        else:
+            print(f"⚠️ No se encontró configuración específica para {nombre_sistema}")
+        
+        # Validar y completar configuraciones faltantes
+        config_base = ValidacionConfiguracion.validar_y_completar_config(config_base, nombre_sistema)
         
         return config_base
+
+# =============================================================================
+# VALIDACIÓN DE CONFIGURACIÓN
+# =============================================================================
+
+class ValidacionConfiguracion:
+    """Validar y normalizar configuración"""
+    
+    @staticmethod
+    def validar_y_completar_config(config: dict, sistema: str) -> dict:
+        """Validar y completar configuraciones faltantes"""
+        config_validada = config.copy()
+        
+        # Valores por defecto esenciales para cualquier sistema
+        defaults = {
+            'estado_file': f'estado_{sistema}.json',
+            'log_file': f'{sistema}_detallado.log',
+            'page_size': 50,
+            'cache_ttl': 300,
+            'sync_on_start': False,
+            'auto_connect': False,
+            'backup_dir': f'backups_{sistema}'
+        }
+        
+        # Aplicar defaults si no existen
+        for key, value in defaults.items():
+            if key not in config_validada:
+                config_validada[key] = value
+        
+        # Asegurar estructura de backup
+        if 'backup' not in config_validada or not isinstance(config_validada['backup'], dict):
+            config_validada['backup'] = {}
+        
+        backup_defaults = {
+            'enabled': True,
+            'max_backups': 10,
+            'min_disk_space_mb': 100,
+            'auto_backup_before_migration': True
+        }
+        
+        for key, value in backup_defaults.items():
+            if key not in config_validada['backup']:
+                config_validada['backup'][key] = value
+        
+        # Asegurar que ssh tiene estructura correcta
+        if 'ssh' not in config_validada:
+            config_validada['ssh'] = {'enabled': False}
+        
+        ssh_defaults = {
+            'enabled': False,
+            'host': '',
+            'port': 22,
+            'username': '',
+            'password': '',
+            'timeout': 30
+        }
+        
+        for key, value in ssh_defaults.items():
+            if key not in config_validada['ssh']:
+                config_validada['ssh'][key] = value
+        
+        # Asegurar estructura de timeouts
+        if 'timeouts' not in config_validada or not isinstance(config_validada['timeouts'], dict):
+            config_validada['timeouts'] = {}
+        
+        timeouts_defaults = {
+            'ssh_connect': 30,
+            'ssh_command': 60,
+            'sftp_transfer': 300,
+            'db_download': 180,
+            'db_upload': 180
+        }
+        
+        for key, value in timeouts_defaults.items():
+            if key not in config_validada['timeouts']:
+                config_validada['timeouts'][key] = value
+        
+        return config_validada
 
 # =============================================================================
 # CLASES BASE PARA ESTADO PERSISTENTE
@@ -152,12 +333,23 @@ class EstadoPersistenteBase:
     def _cargar_estado(self) -> Dict[str, Any]:
         """Cargar estado desde archivo JSON"""
         try:
-            if os.path.exists(self.archivo_estado):
-                import json
-                with open(self.archivo_estado, 'r', encoding='utf-8') as f:
+            # En Streamlit Cloud, usar directorio temporal
+            import tempfile
+            temp_dir = tempfile.gettempdir()
+            estado_path = os.path.join(temp_dir, self.archivo_estado)
+            
+            if os.path.exists(estado_path):
+                with open(estado_path, 'r', encoding='utf-8') as f:
                     estado = json.load(f)
                     # Asegurar estructura básica
                     return self._migrar_estructura_estado(estado)
+            else:
+                # Verificar también en directorio actual por compatibilidad
+                if os.path.exists(self.archivo_estado):
+                    with open(self.archivo_estado, 'r', encoding='utf-8') as f:
+                        estado = json.load(f)
+                        return self._migrar_estructura_estado(estado)
+                        
         except Exception as e:
             self.logger.warning(f"⚠️ Error cargando estado {self.archivo_estado}: {e}")
         
@@ -165,16 +357,26 @@ class EstadoPersistenteBase:
     
     def _migrar_estructura_estado(self, estado: Dict[str, Any]) -> Dict[str, Any]:
         """Migrar estructura antigua si es necesario"""
-        # Estructura base común
-        if 'estadisticas_migracion' not in estado:
-            estado['estadisticas_migracion'] = {
-                'exitosas': estado.get('migraciones_realizadas', 0),
-                'fallidas': 0,
-                'total_tiempo': 0
-            }
+        # Versión de estructura
+        if 'version_estructura' not in estado:
+            estado['version_estructura'] = '1.0'
         
-        if 'backups_realizados' not in estado:
-            estado['backups_realizados'] = 0
+        # Migrar de v1.0 a v2.0
+        if estado['version_estructura'] == '1.0':
+            if 'migraciones_realizadas' in estado:
+                estado['estadisticas_migracion'] = {
+                    'exitosas': estado.get('migraciones_realizadas', 0),
+                    'fallidas': estado.get('migraciones_fallidas', 0),
+                    'total_tiempo': estado.get('tiempo_total_migracion', 0)
+                }
+                # No eliminar para compatibilidad
+            estado['version_estructura'] = '2.0'
+        
+        # Asegurar estructura básica
+        defaults = self._estado_por_defecto()
+        for key, value in defaults.items():
+            if key not in estado:
+                estado[key] = value
         
         return estado
     
@@ -185,7 +387,7 @@ class EstadoPersistenteBase:
             'db_inicializada': False,
             'fecha_inicializacion': None,
             'ultima_sincronizacion': None,
-            'modo_operacion': 'remoto',  # Siempre remoto
+            'modo_operacion': 'remoto',
             'ssh_conectado': False,
             'ssh_error': None,
             'ultima_verificacion': None,
@@ -195,18 +397,31 @@ class EstadoPersistenteBase:
                 'total_tiempo': 0
             },
             'backups_realizados': 0,
-            'version_estructura': '2.0'  # Nueva versión
+            'migraciones_realizadas': 0,  # Mantener por compatibilidad
+            'migraciones_fallidas': 0,    # Mantener por compatibilidad
+            'tiempo_total_migracion': 0,  # Mantener por compatibilidad
+            'version_estructura': '2.0'
         }
     
     def guardar_estado(self):
         """Guardar estado a archivo JSON"""
         try:
-            import json
-            with open(self.archivo_estado, 'w', encoding='utf-8') as f:
+            # En Streamlit Cloud, usar directorio temporal
+            import tempfile
+            temp_dir = tempfile.gettempdir()
+            estado_path = os.path.join(temp_dir, self.archivo_estado)
+            
+            with open(estado_path, 'w', encoding='utf-8') as f:
                 json.dump(self.estado, f, indent=2, default=str)
-            self.logger.debug(f"Estado guardado en {self.archivo_estado}")
+            self.logger.debug(f"Estado guardado en {estado_path}")
         except Exception as e:
             self.logger.error(f"❌ Error guardando estado: {e}")
+            # Intentar en directorio actual como fallback
+            try:
+                with open(self.archivo_estado, 'w', encoding='utf-8') as f:
+                    json.dump(self.estado, f, indent=2, default=str)
+            except Exception as e2:
+                self.logger.error(f"❌ Error crítico guardando estado: {e2}")
     
     def marcar_db_inicializada(self):
         """Marcar la base de datos como inicializada"""
@@ -247,7 +462,6 @@ class EstadoPersistenteBase:
     
     def _timestamp_actual(self):
         """Obtener timestamp actual en formato ISO"""
-        from datetime import datetime
         return datetime.now().isoformat()
     
     def esta_inicializada(self) -> bool:
@@ -256,7 +470,6 @@ class EstadoPersistenteBase:
     
     def obtener_fecha_inicializacion(self):
         """Obtener fecha de inicialización"""
-        from datetime import datetime
         fecha_str = self.estado.get('fecha_inicializacion')
         if fecha_str:
             try:
@@ -270,7 +483,7 @@ class EstadoPersistenteBase:
         return self.estado.get('estadisticas_migracion', {})
 
 # =============================================================================
-# GESTOR DE CONEXIÓN SSH COMPARTIDO
+# GESTOR DE CONEXIÓN SSH COMPARTIDO - CORREGIDO
 # =============================================================================
 
 class GestorSSHCompartido:
@@ -288,21 +501,38 @@ class GestorSSHCompartido:
     
     def _inicializar(self):
         """Inicializar gestor SSH"""
-        self.config = CargadorConfiguracion.obtener_config_sistema('system')
-        self.logger = SistemaLogging.obtener_logger('ssh_shared')
-        self.ssh_config = self.config.get('ssh', {})
-        
-        if not self.ssh_config.get('enabled', True):
-            self.logger.warning("SSH deshabilitado en configuración")
+        try:
+            # Obtener configuración completa
+            self.config = CargadorConfiguracion.cargar_configuracion()
+            self.logger = SistemaLogging.obtener_logger('ssh_shared')
+            self.ssh_config = self.config.get('ssh', {})
+            
+            if not HAS_PARAMIKO:
+                self.logger.warning("⚠️ paramiko no está instalado. Instalar con: pip install paramiko")
+                self.ssh_config['enabled'] = False
+            
+            if not self.ssh_config.get('enabled', True):
+                self.logger.info("SSH deshabilitado en configuración")
+                
+        except Exception as e:
+            self.logger = SistemaLogging.obtener_logger('ssh_shared')
+            self.logger.error(f"Error inicializando SSH: {e}")
+            self.ssh_config = {'enabled': False}
     
     def conectar(self) -> bool:
         """Establecer conexión SSH con el servidor remoto"""
+        # Verificar que paramiko esté disponible
+        if not HAS_PARAMIKO or paramiko is None or socket is None:
+            self.logger.error("❌ paramiko o socket no están disponibles")
+            return False
+        
         try:
-            import paramiko
-            import socket
-            
             if not self.ssh_config.get('host'):
-                self.logger.error("No hay configuración SSH disponible")
+                self.logger.error("No hay configuración SSH disponible (host no configurado)")
+                return False
+            
+            if not self.ssh_config.get('enabled', True):
+                self.logger.warning("SSH deshabilitado en configuración")
                 return False
             
             if self._ssh_client and self._verificar_conexion_activa():
@@ -314,7 +544,7 @@ class GestorSSHCompartido:
             self._ssh_client = paramiko.SSHClient()
             self._ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
-            timeout = self.config.get('timeouts', {}).get('ssh_connect', 30)
+            timeout = self.ssh_config.get('timeout', 30)
             
             self._ssh_client.connect(
                 hostname=self.ssh_config['host'],
@@ -328,7 +558,7 @@ class GestorSSHCompartido:
             )
             
             self._sftp_client = self._ssh_client.open_sftp()
-            sftp_timeout = self.config.get('timeouts', {}).get('sftp_transfer', 300)
+            sftp_timeout = self.ssh_config.get('timeout', 300)
             self._sftp_client.get_channel().settimeout(sftp_timeout)
             
             self.logger.info(f"✅ Conexión SSH establecida a {self.ssh_config['host']}")
@@ -340,6 +570,9 @@ class GestorSSHCompartido:
         except paramiko.AuthenticationException:
             self.logger.error("❌ Error de autenticación SSH - Credenciales incorrectas")
             return False
+        except paramiko.SSHException as e:
+            self.logger.error(f"❌ Error SSH: {str(e)}")
+            return False
         except Exception as e:
             self.logger.error(f"❌ Error de conexión SSH: {str(e)}")
             return False
@@ -349,8 +582,9 @@ class GestorSSHCompartido:
         try:
             if self._ssh_client and self._sftp_client:
                 # Intentar un comando simple
-                self._ssh_client.exec_command('pwd', timeout=5)
-                return True
+                transport = self._ssh_client.get_transport()
+                if transport and transport.is_active():
+                    return True
         except:
             pass
         return False
@@ -383,7 +617,7 @@ class GestorSSHCompartido:
                 return None
         return self._ssh_client
     
-    def ejecutar_comando_remoto(self, comando: str, timeout: int = 30) -> tuple:
+    def ejecutar_comando_remoto(self, comando: str, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
         """Ejecutar comando en servidor remoto"""
         try:
             ssh = self.obtener_ssh()
@@ -407,10 +641,13 @@ class UtilidadesCompartidas:
     """Utilidades compartidas para todos los sistemas"""
     
     @staticmethod
-    def verificar_espacio_disco(ruta: str, espacio_minimo_mb: int = 100) -> tuple:
+    def verificar_espacio_disco(ruta: str, espacio_minimo_mb: int = 100) -> Tuple[bool, float]:
         """Verificar espacio disponible en disco"""
+        if not HAS_PSUTIL:
+            print("⚠️ psutil no está instalado. Instalar con: pip install psutil")
+            return True, 0  # Asumir que hay espacio
+        
         try:
-            import psutil
             stat = psutil.disk_usage(ruta)
             espacio_disponible_mb = stat.free / (1024 * 1024)
             
@@ -420,7 +657,8 @@ class UtilidadesCompartidas:
             return True, espacio_disponible_mb
             
         except Exception as e:
-            return False, 0
+            print(f"⚠️ Error verificando espacio en disco: {e}")
+            return True, 0  # Asumir que hay espacio
     
     @staticmethod
     def verificar_conectividad_red(host: str = "8.8.8.8", port: int = 53, timeout: int = 3) -> bool:
@@ -434,18 +672,21 @@ class UtilidadesCompartidas:
             return False
     
     @staticmethod
-    def crear_directorio_si_no_existe(ruta: str):
+    def crear_directorio_si_no_existe(ruta: str) -> bool:
         """Crear directorio si no existe"""
         import os
-        if not os.path.exists(ruta):
-            os.makedirs(ruta, exist_ok=True)
-            return True
-        return False
+        try:
+            if not os.path.exists(ruta):
+                os.makedirs(ruta, exist_ok=True)
+                return True
+            return False
+        except Exception as e:
+            print(f"⚠️ Error creando directorio {ruta}: {e}")
+            return False
     
     @staticmethod
     def generar_timestamp() -> str:
         """Generar timestamp para nombres de archivo"""
-        from datetime import datetime
         return datetime.now().strftime('%Y%m%d_%H%M%S')
     
     @staticmethod
@@ -463,3 +704,139 @@ class UtilidadesCompartidas:
         if not matricula:
             return False
         return len(matricula) >= 3 and any(char.isdigit() for char in matricula)
+    
+    @staticmethod
+    def validar_curp(curp: str) -> bool:
+        """Validar formato básico de CURP"""
+        import re
+        if not curp or len(curp) != 18:
+            return False
+        pattern = r'^[A-Z]{4}[0-9]{6}[HM][A-Z]{5}[0-9A-Z]{2}$'
+        return bool(re.match(pattern, curp))
+    
+    @staticmethod
+    def calcular_edad(fecha_nacimiento: str) -> Optional[int]:
+        """Calcular edad a partir de fecha de nacimiento"""
+        try:
+            nacimiento = datetime.strptime(fecha_nacimiento, '%Y-%m-%d')
+            hoy = datetime.now()
+            edad = hoy.year - nacimiento.year
+            if (hoy.month, hoy.day) < (nacimiento.month, nacimiento.day):
+                edad -= 1
+            return edad
+        except:
+            return None
+    
+    @staticmethod
+    def formatear_dinero(cantidad: float) -> str:
+        """Formatear cantidad monetaria"""
+        return f"${cantidad:,.2f}"
+    
+    @staticmethod
+    def obtener_directorio_temporal() -> str:
+        """Obtener directorio temporal para Streamlit Cloud"""
+        import tempfile
+        return tempfile.gettempdir()
+    
+    @staticmethod
+    def crear_archivo_temporal(extension: str = ".tmp") -> str:
+        """Crear archivo temporal con extensión específica"""
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        timestamp = UtilidadesCompartidas.generar_timestamp()
+        return os.path.join(temp_dir, f"temp_{timestamp}{extension}")
+
+# =============================================================================
+# VALIDACIÓN DE CONFIGURACIÓN ESPECÍFICA
+# =============================================================================
+
+class ValidacionConfiguracionEspecifica:
+    """Validación específica por sistema"""
+    
+    @staticmethod
+    def validar_config_escuela(config: dict) -> list:
+        """Validar configuración mínima para sistema escolar"""
+        errores = []
+        
+        # Verificar configuración SSH si está habilitado
+        ssh_config = config.get('ssh', {})
+        if ssh_config.get('enabled', False):
+            if not ssh_config.get('host'):
+                errores.append("SSH habilitado pero no hay host configurado")
+            if not ssh_config.get('username'):
+                errores.append("SSH habilitado pero no hay usuario configurado")
+            if not ssh_config.get('password'):
+                errores.append("SSH habilitado pero no hay contraseña configurada")
+        
+        # Verificar rutas remotas si SSH está habilitado
+        if ssh_config.get('enabled', False):
+            remote_paths = config.get('remote_paths', {})
+            if not remote_paths.get('escuela_db'):
+                errores.append("SSH habilitado pero no hay ruta para escuela_db")
+        
+        return errores
+
+# =============================================================================
+# INICIALIZACIÓN RÁPIDA
+# =============================================================================
+
+def inicializar_sistema_rapido(nombre_sistema: str = 'escuela') -> Tuple[bool, str]:
+    """Inicialización rápida para verificar que todo funciona"""
+    try:
+        # 1. Verificar imports
+        if not HAS_TOMLLIB:
+            return False, "tomllib/tomli no está instalado"
+        
+        if not HAS_PARAMIKO:
+            return False, "paramiko no está instalado (necesario para SSH)"
+        
+        # 2. Cargar configuración
+        config = CargadorConfiguracion.obtener_config_sistema(nombre_sistema)
+        
+        # 3. Verificar configuración básica
+        ssh_config = config.get('ssh', {})
+        if ssh_config.get('enabled', False):
+            if not ssh_config.get('host'):
+                return False, "SSH habilitado pero sin host"
+        
+        # 4. Crear logger
+        logger = SistemaLogging.obtener_logger(nombre_sistema)
+        logger.info(f"Sistema {nombre_sistema} inicializado correctamente")
+        
+        return True, "✅ Sistema inicializado correctamente"
+        
+    except Exception as e:
+        return False, f"❌ Error inicializando sistema: {str(e)}"
+
+# =============================================================================
+# FUNCIÓN DE PRUEBA
+# =============================================================================
+
+def probar_configuracion():
+    """Función para probar la configuración"""
+    print("🧪 Probando configuración compartida...")
+    
+    # Probar cargador de configuración
+    try:
+        config = CargadorConfiguracion.cargar_configuracion()
+        print(f"✅ Configuración cargada: {len(config)} secciones")
+    except Exception as e:
+        print(f"❌ Error cargando configuración: {e}")
+    
+    # Probar sistema de logging
+    logger = SistemaLogging.obtener_logger('test')
+    logger.info("✅ Logging funcionando")
+    
+    # Probar utilidades
+    util = UtilidadesCompartidas()
+    timestamp = util.generar_timestamp()
+    print(f"✅ Timestamp generado: {timestamp}")
+    
+    print("✅ Pruebas completadas")
+
+# =============================================================================
+# EJECUCIÓN DIRECTA
+# =============================================================================
+
+if __name__ == "__main__":
+    probar_configuracion()

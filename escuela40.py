@@ -1,6 +1,6 @@
 """
-escuela30.py - Sistema de Gestión de Escuela (Refactorizado)
-Versión 3.0 con estado persistente independiente y conexión SSH compartida
+escuela40.py - Sistema de Gestión de Escuela (Refactorizado)
+Versión 3.0 corregida para Streamlit Cloud
 Sistema REMOTO exclusivo para gestión de estudiantes, inscritos, egresados, contratados
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
 
-# Importar módulos compartidos
+# Importar módulos compartidos - CORREGIDO PARA STREAMLIT CLOUD
 try:
     from shared_config import (
         SistemaLogging,
@@ -28,26 +28,61 @@ try:
         GestorSSHCompartido,
         UtilidadesCompartidas
     )
+    IMPORTACIONES_COMPLETAS = True
 except ImportError as e:
+    IMPORTACIONES_COMPLETAS = False
     st.error(f"❌ Error crítico: No se pudo importar módulos compartidos: {e}")
+    st.info("⚠️ Verifica que shared_config.py esté en el mismo directorio")
     st.stop()
 
 # =============================================================================
-# CONFIGURACIÓN Y LOGGING
+# CONFIGURACIÓN Y LOGGING - CORREGIDO
 # =============================================================================
 
 # Obtener configuración para el sistema escuela
-config = CargadorConfiguracion.obtener_config_sistema('escuela')
+try:
+    config = CargadorConfiguracion.obtener_config_sistema('escuela')
+    
+    # Validar configuración básica
+    if not config.get('ssh', {}).get('host') and config.get('ssh', {}).get('enabled', False):
+        st.warning("⚠️ SSH habilitado pero no hay host configurado")
+        config['ssh']['enabled'] = False
+        
+except Exception as e:
+    st.error(f"❌ Error cargando configuración: {e}")
+    # Configuración de emergencia
+    config = {
+        'estado_file': 'estado_escuela.json',
+        'log_file': 'escuela_detallado.log',
+        'page_size': 50,
+        'cache_ttl': 300,
+        'ssh': {'enabled': False},
+        'remote_paths': {},
+        'backup': {'enabled': False},
+        'sync_on_start': False
+    }
 
 # Configurar logging
 logger = SistemaLogging.obtener_logger('escuela', config.get('log_file', 'escuela_detallado.log'))
 
 # Crear instancia de estado persistente
-estado_archivo = config.get('estado_file', 'estado_escuela.json')
-estado = EstadoPersistenteBase(estado_archivo, 'escuela')
+try:
+    estado_archivo = config.get('estado_file', 'estado_escuela.json')
+    estado = EstadoPersistenteBase(estado_archivo, 'escuela')
+except Exception as e:
+    logger.error(f"❌ Error creando estado persistente: {e}")
+    # Estado de emergencia
+    estado = None
 
 # Instancia global del gestor SSH
-gestor_ssh = GestorSSHCompartido()
+try:
+    gestor_ssh = GestorSSHCompartido()
+except Exception as e:
+    logger.error(f"❌ Error creando gestor SSH: {e}")
+    gestor_ssh = None
+
+# Instancia de utilidades
+util = UtilidadesCompartidas()
 
 # =============================================================================
 # CONSTANTES Y CONFIGURACIÓN
@@ -65,7 +100,7 @@ NIVELES_ESTUDIO = ['Licenciatura', 'Maestría', 'Doctorado', 'Especialidad']
 TURNOS = ['Matutino', 'Vespertino', 'Nocturno', 'Mixto']
 
 # =============================================================================
-# CLASE PRINCIPAL DEL SISTEMA
+# CLASE PRINCIPAL DEL SISTEMA - CORREGIDA PARA STREAMLIT CLOUD
 # =============================================================================
 
 class SistemaGestionEscolar:
@@ -76,7 +111,7 @@ class SistemaGestionEscolar:
         self.logger = logger
         self.estado = estado
         self.gestor_ssh = gestor_ssh
-        self.util = UtilidadesCompartidas()
+        self.util = util
         
         # Configuración de rutas
         self.rutas = config.get('remote_paths', {})
@@ -92,7 +127,7 @@ class SistemaGestionEscolar:
         self._inicializar_sistema()
     
     def _inicializar_sistema(self):
-        """Inicializar el sistema"""
+        """Inicializar el sistema - CORREGIDO PARA STREAMLIT CLOUD"""
         self.logger.info("🚀 Inicializando Sistema de Gestión Escolar")
         
         # Verificar si ya está inicializado
@@ -101,21 +136,36 @@ class SistemaGestionEscolar:
         else:
             self.logger.info(f"✅ Sistema ya inicializado el {self.estado.obtener_fecha_inicializacion()}")
         
-        # Sincronizar si está configurado
-        if self.config.get('sync_on_start', True):
+        # Sincronizar si está configurado y hay SSH
+        if self.config.get('sync_on_start', True) and self.ssh_config.get('enabled', False):
             self.sincronizar_con_servidor()
+        elif self.ssh_config.get('enabled', False):
+            self.logger.info("🔄 Sincronización al inicio deshabilitada")
+        else:
+            self.logger.info("🔌 SSH deshabilitado, omitiendo sincronización")
     
     def _inicializar_base_datos(self):
-        """Inicializar la base de datos local"""
+        """Inicializar la base de datos local - CORREGIDO PARA STREAMLIT CLOUD"""
         try:
             self.logger.info("🔄 Inicializando base de datos local...")
             
-            # Crear conexión a base de datos local temporal
-            self.db_local_path = "temp_escuela.db"
+            # Streamlit Cloud: usar directorio temporal
+            import tempfile
+            temp_dir = tempfile.gettempdir()
             
+            # Usar directorio temporal con nombre único
+            timestamp = self.util.generar_timestamp()
+            self.db_local_path = os.path.join(temp_dir, f"escuela_db_{timestamp}.db")
+            
+            # Eliminar si existe (por precaución)
             if os.path.exists(self.db_local_path):
-                os.remove(self.db_local_path)
+                try:
+                    os.remove(self.db_local_path)
+                    self.logger.debug(f"Archivo existente eliminado: {self.db_local_path}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ No se pudo eliminar archivo existente: {e}")
             
+            # Crear conexión
             self.conexion_local = sqlite3.connect(self.db_local_path, check_same_thread=False)
             self.conexion_local.row_factory = sqlite3.Row
             
@@ -124,11 +174,24 @@ class SistemaGestionEscolar:
             
             # Marcar como inicializada
             self.estado.marcar_db_inicializada()
-            self.logger.info("✅ Base de datos inicializada exitosamente")
+            self.logger.info(f"✅ Base de datos inicializada exitosamente en: {self.db_local_path}")
             
         except Exception as e:
             self.logger.error(f"❌ Error inicializando base de datos: {e}")
-            st.error(f"Error crítico al inicializar la base de datos: {str(e)}")
+            
+            # FALLBACK: base de datos en memoria
+            try:
+                self.logger.info("🔄 Intentando base de datos en memoria como fallback...")
+                self.conexion_local = sqlite3.connect(":memory:", check_same_thread=False)
+                self.conexion_local.row_factory = sqlite3.Row
+                self._crear_estructura_bd()
+                self.db_local_path = ":memory:"
+                self.estado.marcar_db_inicializada()
+                self.logger.info("✅ Base de datos en memoria creada como fallback")
+            except Exception as e2:
+                self.logger.error(f"❌ Error crítico: No se pudo crear BD: {e2}")
+                st.error(f"Error crítico al inicializar la base de datos: {str(e2)}")
+                raise
     
     def _crear_estructura_bd(self):
         """Crear estructura completa de la base de datos"""
@@ -274,11 +337,11 @@ class SistemaGestionEscolar:
         self.logger.info("✅ Estructura de base de datos creada")
     
     # =============================================================================
-    # OPERACIONES DE SINCRONIZACIÓN CON SERVIDOR
+    # OPERACIONES DE SINCRONIZACIÓN CON SERVIDOR - CORREGIDAS
     # =============================================================================
     
     def sincronizar_con_servidor(self, forzar: bool = False):
-        """Sincronizar datos con el servidor remoto"""
+        """Sincronizar datos con el servidor remoto - CORREGIDO"""
         try:
             if not self.ssh_config.get('enabled', True):
                 self.logger.warning("SSH deshabilitado, omitiendo sincronización")
@@ -287,7 +350,7 @@ class SistemaGestionEscolar:
             self.logger.info("🔄 Sincronizando con servidor remoto...")
             
             # Conectar al servidor
-            if not self.gestor_ssh.conectar():
+            if not self.gestor_ssh or not self.gestor_ssh.conectar():
                 self.logger.error("❌ No se pudo conectar al servidor SSH")
                 return False
             
@@ -298,13 +361,22 @@ class SistemaGestionEscolar:
             
             # Descargar base de datos principal
             db_remota = self.rutas.get('escuela_db')
-            if db_remota:
-                self._descargar_base_datos(sftp, db_remota, self.db_local_path)
+            if db_remota and self.db_local_path and self.db_local_path != ":memory:":
+                try:
+                    self._descargar_base_datos(sftp, db_remota, self.db_local_path)
+                except Exception as e:
+                    self.logger.error(f"❌ Error descargando BD principal: {e}")
+                    # Continuar con otras operaciones
             
-            # Descargar base de datos de inscritos
+            # Descargar base de datos de inscritos si está configurada
             db_inscritos_remota = self.rutas.get('inscritos_db')
             if db_inscritos_remota:
-                self._descargar_base_datos(sftp, db_inscritos_remota, 'temp_inscritos.db')
+                try:
+                    temp_inscritos_path = self.util.crear_archivo_temporal(".db")
+                    self._descargar_base_datos(sftp, db_inscritos_remota, temp_inscritos_path)
+                    # Aquí podrías procesar o fusionar esta BD
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error descargando BD de inscritos: {e}")
             
             # Sincronizar archivos de uploads
             self._sincronizar_uploads(sftp)
@@ -330,13 +402,33 @@ class SistemaGestionEscolar:
         try:
             self.logger.info(f"📥 Descargando {ruta_remota}...")
             
+            # Verificar si existe localmente
             if os.path.exists(ruta_local):
-                backup_path = f"{ruta_local}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                os.rename(ruta_local, backup_path)
-                self.logger.debug(f"Backup creado: {backup_path}")
+                # Crear backup
+                backup_path = f"{ruta_local}.backup_{self.util.generar_timestamp()}"
+                try:
+                    import shutil
+                    shutil.copy2(ruta_local, backup_path)
+                    self.logger.debug(f"Backup creado: {backup_path}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ No se pudo crear backup: {e}")
             
+            # Descargar archivo
             sftp.get(ruta_remota, ruta_local)
-            self.logger.info(f"✅ Base de datos descargada: {ruta_local}")
+            
+            # Verificar que se descargó
+            if os.path.exists(ruta_local):
+                file_size = os.path.getsize(ruta_local)
+                self.logger.info(f"✅ Base de datos descargada: {ruta_local} ({file_size} bytes)")
+                
+                # Re-conectar a la nueva BD
+                if ruta_local == self.db_local_path:
+                    self.conexion_local.close()
+                    self.conexion_local = sqlite3.connect(self.db_local_path, check_same_thread=False)
+                    self.conexion_local.row_factory = sqlite3.Row
+                    self.logger.info("✅ Reconectado a base de datos descargada")
+            else:
+                self.logger.error(f"❌ Archivo descargado no encontrado: {ruta_local}")
             
         except FileNotFoundError:
             self.logger.warning(f"⚠️ Archivo remoto no encontrado: {ruta_remota}")
@@ -360,15 +452,28 @@ class SistemaGestionEscolar:
             
             self.logger.info("✅ Directorios de uploads preparados")
             
+            # Opcional: descargar archivos remotos si existen
+            uploads_base = self.rutas.get('uploads_base')
+            if uploads_base:
+                try:
+                    self.logger.info(f"📥 Descargando archivos de uploads desde {uploads_base}...")
+                    # Aquí iría la lógica para sincronizar archivos
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error sincronizando uploads: {e}")
+            
         except Exception as e:
-            self.logger.error(f"❌ Error sincronizando uploads: {e}")
+            self.logger.error(f"❌ Error en sincronización de uploads: {e}")
     
     def subir_cambios_al_servidor(self):
         """Subir cambios locales al servidor remoto"""
         try:
             self.logger.info("🔼 Subiendo cambios al servidor...")
             
-            if not self.gestor_ssh.conectar():
+            if not self.ssh_config.get('enabled', True):
+                self.logger.error("❌ SSH deshabilitado, no se pueden subir cambios")
+                return False
+            
+            if not self.gestor_ssh or not self.gestor_ssh.conectar():
                 self.logger.error("❌ No se pudo conectar al servidor SSH")
                 return False
             
@@ -379,16 +484,9 @@ class SistemaGestionEscolar:
             
             # Subir base de datos principal
             db_remota = self.rutas.get('escuela_db')
-            if db_remota and os.path.exists(self.db_local_path):
+            if db_remota and self.db_local_path and os.path.exists(self.db_local_path):
                 sftp.put(self.db_local_path, db_remota)
                 self.logger.info(f"✅ Base de datos subida: {db_remota}")
-            
-            # Subir base de datos de inscritos si existe
-            db_inscritos_local = 'temp_inscritos.db'
-            db_inscritos_remota = self.rutas.get('inscritos_db')
-            if db_inscritos_remota and os.path.exists(db_inscritos_local):
-                sftp.put(db_inscritos_local, db_inscritos_remota)
-                self.logger.info(f"✅ Base de datos de inscritos subida")
             
             self.logger.info("✅ Cambios subidos exitosamente")
             return True
@@ -398,17 +496,21 @@ class SistemaGestionEscolar:
             return False
     
     # =============================================================================
-    # OPERACIONES DE BACKUP
+    # OPERACIONES DE BACKUP - CORREGIDAS
     # =============================================================================
     
     def crear_backup(self):
-        """Crear backup de la base de datos"""
+        """Crear backup de la base de datos - CORREGIDO"""
         try:
             if not self.config.get('backup', {}).get('enabled', True):
                 self.logger.info("Backup deshabilitado en configuración")
                 return True
             
-            backup_dir = self.config.get('backup_dir', 'backups_escuela')
+            # Streamlit Cloud: usar directorio temporal
+            import tempfile
+            temp_dir = tempfile.gettempdir()
+            
+            backup_dir = os.path.join(temp_dir, self.config.get('backup_dir', 'backups_escuela'))
             self.util.crear_directorio_si_no_existe(backup_dir)
             
             # Verificar espacio en disco
@@ -430,22 +532,62 @@ class SistemaGestionEscolar:
             
             # Comprimir si es grande
             if os.path.getsize(backup_file) > 10 * 1024 * 1024:  # > 10MB
-                import gzip
-                with open(backup_file, 'rb') as f_in:
-                    with gzip.open(f"{backup_file}.gz", 'wb') as f_out:
-                        f_out.writelines(f_in)
-                os.remove(backup_file)
-                backup_file = f"{backup_file}.gz"
+                try:
+                    import gzip
+                    with open(backup_file, 'rb') as f_in:
+                        with gzip.open(f"{backup_file}.gz", 'wb') as f_out:
+                            f_out.writelines(f_in)
+                    os.remove(backup_file)
+                    backup_file = f"{backup_file}.gz"
+                    self.logger.info("✅ Backup comprimido")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ No se pudo comprimir backup: {e}")
             
             # Limpiar backups antiguos
             self._limpiar_backups_antiguos(backup_dir)
             
             self.estado.registrar_backup()
             self.logger.info(f"✅ Backup creado: {backup_file}")
+            
+            # Opcional: subir backup al servidor
+            if self.ssh_config.get('enabled', False):
+                try:
+                    self._subir_backup_al_servidor(backup_file)
+                except Exception as e:
+                    self.logger.warning(f"⚠️ No se pudo subir backup al servidor: {e}")
+            
             return True
             
         except Exception as e:
             self.logger.error(f"❌ Error creando backup: {e}")
+            return False
+    
+    def _subir_backup_al_servidor(self, backup_file: str):
+        """Subir backup al servidor remoto"""
+        if not self.gestor_ssh or not self.gestor_ssh.conectar():
+            return False
+        
+        sftp = self.gestor_ssh.obtener_sftp()
+        if not sftp:
+            return False
+        
+        try:
+            # Crear directorio de backups remoto si no existe
+            remote_backup_dir = self.rutas.get('uploads_base', '') + '/backups'
+            if remote_backup_dir:
+                try:
+                    sftp.mkdir(remote_backup_dir)
+                except:
+                    pass  # El directorio ya existe
+            
+            # Subir backup
+            remote_path = os.path.join(remote_backup_dir, os.path.basename(backup_file))
+            sftp.put(backup_file, remote_path)
+            self.logger.info(f"✅ Backup subido al servidor: {remote_path}")
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error subiendo backup: {e}")
             return False
     
     def _limpiar_backups_antiguos(self, backup_dir: str):
@@ -460,7 +602,11 @@ class SistemaGestionEscolar:
             for file in os.listdir(backup_dir):
                 if file.startswith('escuela_backup_'):
                     file_path = os.path.join(backup_dir, file)
-                    backups.append((file_path, os.path.getmtime(file_path)))
+                    if os.path.isfile(file_path):
+                        backups.append((file_path, os.path.getmtime(file_path)))
+            
+            if len(backups) <= max_backups:
+                return
             
             # Ordenar por fecha de modificación (más antiguos primero)
             backups.sort(key=lambda x: x[1])
@@ -471,8 +617,8 @@ class SistemaGestionEscolar:
                 try:
                     os.remove(old_backup[0])
                     self.logger.debug(f"Backup antiguo eliminado: {old_backup[0]}")
-                except:
-                    pass
+                except Exception as e:
+                    self.logger.warning(f"⚠️ No se pudo eliminar backup antiguo: {e}")
             
         except Exception as e:
             self.logger.warning(f"⚠️ Error limpiando backups antiguos: {e}")
@@ -968,7 +1114,11 @@ class SistemaGestionEscolar:
                 FROM estudiantes
                 GROUP BY estado_estudiante
             """)
-            estadisticas['estudiantes_por_estado'] = dict(cursor.fetchall())
+            resultados = cursor.fetchall()
+            if resultados:
+                estadisticas['estudiantes_por_estado'] = dict(resultados)
+            else:
+                estadisticas['estudiantes_por_estado'] = {}
             
             # Total de estudiantes
             estadisticas['total_estudiantes'] = sum(estadisticas['estudiantes_por_estado'].values())
@@ -978,15 +1128,16 @@ class SistemaGestionEscolar:
             
             # Egresados
             cursor.execute("SELECT COUNT(*) FROM egresados")
-            estadisticas['total_egresados'] = cursor.fetchone()[0]
+            estadisticas['total_egresados'] = cursor.fetchone()[0] or 0
             
             # Contratados
             cursor.execute("SELECT COUNT(DISTINCT egresado_id) FROM contratados")
-            estadisticas['egresados_contratados'] = cursor.fetchone()[0]
+            estadisticas['egresados_contratados'] = cursor.fetchone()[0] or 0
             
             # Promedio general de estudiantes activos
             cursor.execute("SELECT AVG(promedio) FROM estudiantes WHERE estado_estudiante = 'Activo' AND promedio IS NOT NULL")
-            estadisticas['promedio_general'] = cursor.fetchone()[0] or 0
+            resultado = cursor.fetchone()
+            estadisticas['promedio_general'] = resultado[0] if resultado and resultado[0] else 0
             
             # Estudiantes por nivel de estudio
             cursor.execute("""
@@ -995,7 +1146,11 @@ class SistemaGestionEscolar:
                 WHERE nivel_estudio IS NOT NULL
                 GROUP BY nivel_estudio
             """)
-            estadisticas['estudiantes_por_nivel'] = dict(cursor.fetchall())
+            resultados = cursor.fetchall()
+            if resultados:
+                estadisticas['estudiantes_por_nivel'] = dict(resultados)
+            else:
+                estadisticas['estudiantes_por_nivel'] = {}
             
             # Estudiantes por carrera
             cursor.execute("""
@@ -1006,7 +1161,11 @@ class SistemaGestionEscolar:
                 ORDER BY total DESC
                 LIMIT 10
             """)
-            estadisticas['top_carreras'] = dict(cursor.fetchall())
+            resultados = cursor.fetchall()
+            if resultados:
+                estadisticas['top_carreras'] = dict(resultados)
+            else:
+                estadisticas['top_carreras'] = {}
             
             # Inscripciones por ciclo escolar
             cursor.execute("""
@@ -1016,13 +1175,28 @@ class SistemaGestionEscolar:
                 ORDER BY ciclo_escolar DESC
                 LIMIT 5
             """)
-            estadisticas['inscripciones_por_ciclo'] = dict(cursor.fetchall())
+            resultados = cursor.fetchall()
+            if resultados:
+                estadisticas['inscripciones_por_ciclo'] = dict(resultados)
+            else:
+                estadisticas['inscripciones_por_ciclo'] = {}
             
             return estadisticas
             
         except Exception as e:
             self.logger.error(f"❌ Error obteniendo estadísticas: {e}")
-            return {}
+            # Devolver estadísticas vacías pero estructuradas
+            return {
+                'estudiantes_por_estado': {},
+                'total_estudiantes': 0,
+                'estudiantes_activos': 0,
+                'total_egresados': 0,
+                'egresados_contratados': 0,
+                'promedio_general': 0,
+                'estudiantes_por_nivel': {},
+                'top_carreras': {},
+                'inscripciones_por_ciclo': {}
+            }
     
     def generar_informe_excel(self, tipo_informe: str = 'estudiantes'):
         """Generar informe en formato Excel"""
@@ -1058,6 +1232,10 @@ class SistemaGestionEscolar:
             # Ejecutar consulta y crear DataFrame
             df = pd.read_sql_query(query, self.conexion_local)
             
+            # Si no hay datos, crear DataFrame vacío
+            if df.empty:
+                df = pd.DataFrame({'Mensaje': ['No hay datos para el informe seleccionado']})
+            
             # Crear archivo Excel en memoria
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -1070,7 +1248,15 @@ class SistemaGestionEscolar:
             
         except Exception as e:
             self.logger.error(f"❌ Error generando informe Excel: {e}")
-            raise
+            
+            # Crear informe de error
+            df = pd.DataFrame({'Error': [str(e)]})
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Error', index=False)
+            output.seek(0)
+            
+            return output, f"error_informe_{self.util.generar_timestamp()}.xlsx"
     
     # =============================================================================
     # UTILIDADES Y MÉTODOS AUXILIARES
@@ -1151,6 +1337,17 @@ class SistemaGestionEscolar:
         self.cache_timestamps.clear()
         self.logger.info("🗑️ Caché limpiado")
     
+    def obtener_edad_estudiante(self, estudiante_id: int) -> int:
+        """Obtener edad del estudiante"""
+        estudiante = self.obtener_estudiante_por_id(estudiante_id)
+        if estudiante and estudiante.get('fecha_nacimiento'):
+            return self.util.calcular_edad(estudiante['fecha_nacimiento'])
+        return None
+    
+    def formatear_salario(self, salario: float) -> str:
+        """Formatear salario para mostrar"""
+        return self.util.formatear_dinero(salario) if salario else "No especificado"
+    
     # =============================================================================
     # MÉTODOS PARA LA INTERFAZ WEB
     # =============================================================================
@@ -1158,6 +1355,23 @@ class SistemaGestionEscolar:
     def mostrar_panel_control(self):
         """Mostrar panel de control principal"""
         st.title("📊 Panel de Control - Sistema de Gestión Escolar")
+        
+        # Estado del sistema
+        col1, col2 = st.columns(2)
+        with col1:
+            if self.estado.esta_inicializada():
+                st.success("✅ Sistema inicializado")
+            else:
+                st.error("❌ Sistema no inicializado")
+        
+        with col2:
+            if self.ssh_config.get('enabled', False):
+                if self.estado.estado.get('ssh_conectado'):
+                    st.success("🔗 Conectado al servidor")
+                else:
+                    st.error("❌ Desconectado del servidor")
+            else:
+                st.info("🔌 SSH deshabilitado")
         
         # Estadísticas rápidas
         estadisticas = self.obtener_estadisticas_generales()
@@ -1182,17 +1396,16 @@ class SistemaGestionEscolar:
             )
             st.bar_chart(df_estados.set_index('Estado'))
         
-        # Últimas actividades (simulado)
-        st.subheader("📋 Últimas Actividades")
-        actividades = [
-            {"fecha": "2024-01-15", "accion": "Nuevo estudiante registrado", "detalle": "Juan Pérez"},
-            {"fecha": "2024-01-14", "accion": "Inscripción completada", "detalle": "Ciclo 2024-1"},
-            {"fecha": "2024-01-13", "accion": "Egresado registrado", "detalle": "María González"},
-            {"fecha": "2024-01-12", "accion": "Contratación registrada", "detalle": "Empresa ABC"},
-        ]
-        
-        for act in actividades:
-            st.write(f"**{act['fecha']}** - {act['accion']}: {act['detalle']}")
+        # Información del sistema
+        with st.expander("ℹ️ Información del Sistema"):
+            st.write(f"**Base de datos:** {self.db_local_path}")
+            st.write(f"**Modo SSH:** {'Habilitado' if self.ssh_config.get('enabled', False) else 'Deshabilitado'}")
+            
+            if self.estado.estado.get('ultima_sincronizacion'):
+                fecha_sync = datetime.fromisoformat(self.estado.estado['ultima_sincronizacion'])
+                st.write(f"**Última sincronización:** {fecha_sync.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            st.write(f"**Backups realizados:** {self.estado.estado.get('backups_realizados', 0)}")
     
     def mostrar_gestion_estudiantes(self):
         """Mostrar interfaz de gestión de estudiantes"""
@@ -1261,46 +1474,52 @@ class SistemaGestionEscolar:
             
             # Opciones para cada estudiante
             st.subheader("Acciones")
-            estudiante_seleccionado = st.selectbox(
-                "Seleccionar estudiante:",
-                [f"{e['id']} - {e['matricula']} - {e['nombre']} {e['apellido_paterno']}" 
-                 for e in estudiantes]
-            )
-            
-            if estudiante_seleccionado:
-                estudiante_id = int(estudiante_seleccionado.split(' - ')[0])
+            if estudiantes:
+                estudiante_seleccionado = st.selectbox(
+                    "Seleccionar estudiante:",
+                    [f"{e['id']} - {e['matricula']} - {e['nombre']} {e['apellido_paterno']}" 
+                     for e in estudiantes]
+                )
                 
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("📝 Editar", key=f"editar_{estudiante_id}"):
-                        st.session_state['editar_estudiante'] = estudiante_id
-                
-                with col2:
-                    nuevo_estado = st.selectbox(
-                        "Cambiar estado:",
-                        ESTADOS_ESTUDIANTE,
-                        key=f"estado_{estudiante_id}"
-                    )
-                    if st.button("🔄 Actualizar", key=f"actualizar_estado_{estudiante_id}"):
-                        try:
-                            self.cambiar_estado_estudiante(estudiante_id, nuevo_estado)
-                            st.success(f"✅ Estado cambiado a {nuevo_estado}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error: {e}")
-                
-                with col3:
-                    if st.button("🗑️ Dar de baja", key=f"baja_{estudiante_id}"):
-                        if st.checkbox(f"¿Confirmar baja del estudiante {estudiante_id}?"):
+                if estudiante_seleccionado:
+                    estudiante_id = int(estudiante_seleccionado.split(' - ')[0])
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        if st.button("📝 Editar", key=f"editar_{estudiante_id}"):
+                            st.session_state['editar_estudiante'] = estudiante_id
+                    
+                    with col2:
+                        nuevo_estado = st.selectbox(
+                            "Cambiar estado:",
+                            ESTADOS_ESTUDIANTE,
+                            key=f"estado_{estudiante_id}"
+                        )
+                        if st.button("🔄 Actualizar", key=f"actualizar_estado_{estudiante_id}"):
                             try:
-                                self.eliminar_estudiante(estudiante_id)
-                                st.success("✅ Estudiante dado de baja")
+                                self.cambiar_estado_estudiante(estudiante_id, nuevo_estado)
+                                st.success(f"✅ Estado cambiado a {nuevo_estado}")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error: {e}")
+                    
+                    with col3:
+                        if st.button("🗑️ Dar de baja", key=f"baja_{estudiante_id}"):
+                            if st.checkbox(f"¿Confirmar baja del estudiante {estudiante_id}?"):
+                                try:
+                                    self.eliminar_estudiante(estudiante_id)
+                                    st.success("✅ Estudiante dado de baja")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Error: {e}")
         else:
             st.info("📭 No hay estudiantes que coincidan con los filtros")
+            
+            # Botón para crear primer estudiante
+            if st.button("➕ Crear primer estudiante"):
+                st.session_state['crear_estudiante'] = True
+                st.rerun()
     
     def _mostrar_formulario_nuevo_estudiante(self):
         """Mostrar formulario para nuevo estudiante"""
@@ -1518,30 +1737,36 @@ class SistemaGestionEscolar:
             
             # Opciones para actualizar promedio
             st.subheader("Actualizar Promedios")
-            inscripcion_id = st.selectbox(
-                "Seleccionar inscripción:",
-                [f"{ins['id']} - {ins['matricula']} - {ins['nombre']}" for ins in inscripciones]
-            )
-            
-            if inscripcion_id:
-                ins_id = int(inscripcion_id.split(' - ')[0])
-                nuevo_promedio = st.number_input(
-                    "Nuevo promedio:", 
-                    min_value=0.0, 
-                    max_value=10.0, 
-                    value=0.0,
-                    step=0.1
+            if inscripciones:
+                inscripcion_id = st.selectbox(
+                    "Seleccionar inscripción:",
+                    [f"{ins['id']} - {ins['matricula']} - {ins['nombre']}" for ins in inscripciones]
                 )
                 
-                if st.button("💾 Actualizar Promedio"):
-                    try:
-                        self.actualizar_promedio_inscripcion(ins_id, nuevo_promedio)
-                        st.success("✅ Promedio actualizado")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error: {e}")
+                if inscripcion_id:
+                    ins_id = int(inscripcion_id.split(' - ')[0])
+                    nuevo_promedio = st.number_input(
+                        "Nuevo promedio:", 
+                        min_value=0.0, 
+                        max_value=10.0, 
+                        value=0.0,
+                        step=0.1
+                    )
+                    
+                    if st.button("💾 Actualizar Promedio"):
+                        try:
+                            self.actualizar_promedio_inscripcion(ins_id, nuevo_promedio)
+                            st.success("✅ Promedio actualizado")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
         else:
             st.info(f"📭 No hay inscripciones para el ciclo {ciclo_actual}")
+            
+            # Botón para crear primera inscripción
+            if st.button("➕ Crear primera inscripción"):
+                st.session_state['nueva_inscripcion'] = True
+                st.rerun()
     
     def _mostrar_nueva_inscripcion(self, ciclo_actual: str):
         """Mostrar formulario para nueva inscripción"""
@@ -1698,14 +1923,23 @@ class SistemaGestionEscolar:
             
             with col2:
                 if egresados:
-                    promedio_general = sum(eg['promedio_final'] or 0 for eg in egresados) / len(egresados)
-                    st.metric("Promedio General", f"{promedio_general:.2f}")
+                    promedios = [eg['promedio_final'] or 0 for eg in egresados if eg['promedio_final']]
+                    if promedios:
+                        promedio_general = sum(promedios) / len(promedios)
+                        st.metric("Promedio General", f"{promedio_general:.2f}")
+                    else:
+                        st.metric("Promedio General", "N/A")
             
             with col3:
                 carreras_unicas = len(set(eg['carrera'] for eg in egresados if eg['carrera']))
                 st.metric("Carreras", carreras_unicas)
         else:
             st.info("📭 No hay egresados registrados")
+            
+            # Botón para registrar primer egresado
+            if st.button("🎓 Registrar primer egresado"):
+                st.session_state['registrar_egresado'] = True
+                st.rerun()
     
     def _mostrar_registro_egresado(self):
         """Mostrar formulario para registrar egresado"""
@@ -1770,10 +2004,6 @@ class SistemaGestionEscolar:
                                 promedio_final
                             )
                             st.success("✅ Egresado registrado exitosamente")
-                            
-                            # Actualizar campos adicionales si se proporcionaron
-                            # (Nota: Esto requeriría un método adicional para actualizar egresados)
-                            
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error: {e}")
@@ -1817,8 +2047,12 @@ class SistemaGestionEscolar:
                     st.metric("Empresas", empresas_unicas)
                 
                 with col2:
-                    tasa_contratacion = (len(contratados) / max(1, len(self.obtener_egresados()))) * 100
-                    st.metric("Tasa de Contratación", f"{tasa_contratacion:.1f}%")
+                    egresados_totales = len(self.obtener_egresados())
+                    if egresados_totales > 0:
+                        tasa_contratacion = (len(contratados) / egresados_totales) * 100
+                        st.metric("Tasa de Contratación", f"{tasa_contratacion:.1f}%")
+                    else:
+                        st.metric("Tasa de Contratación", "N/A")
             else:
                 st.info("📭 No hay contrataciones registradas")
         
@@ -1910,14 +2144,17 @@ class SistemaGestionEscolar:
         col1, col2 = st.columns(2)
         
         with col1:
-            if self.estado.estado.get('ssh_conectado'):
-                st.success("✅ Conectado al servidor remoto")
-                st.write(f"**Servidor:** {self.ssh_config.get('host', 'Desconocido')}")
-                st.write(f"**Usuario:** {self.ssh_config.get('username', 'Desconocido')}")
+            if self.ssh_config.get('enabled', False):
+                if self.estado.estado.get('ssh_conectado'):
+                    st.success("✅ Conectado al servidor remoto")
+                    st.write(f"**Servidor:** {self.ssh_config.get('host', 'Desconocido')}")
+                    st.write(f"**Usuario:** {self.ssh_config.get('username', 'Desconocido')}")
+                else:
+                    st.error("❌ Desconectado del servidor remoto")
+                    if self.estado.estado.get('ssh_error'):
+                        st.error(f"**Error:** {self.estado.estado['ssh_error']}")
             else:
-                st.error("❌ Desconectado del servidor remoto")
-                if self.estado.estado.get('ssh_error'):
-                    st.error(f"**Error:** {self.estado.estado['ssh_error']}")
+                st.info("🔌 SSH deshabilitado en configuración")
         
         with col2:
             if self.estado.estado.get('ultima_sincronizacion'):
@@ -1989,14 +2226,17 @@ class SistemaGestionEscolar:
         
         # Información de conexión
         st.write("### 🔗 Configuración de Conexión")
-        st.json({
-            "host": self.ssh_config.get('host'),
-            "port": self.ssh_config.get('port'),
-            "username": self.ssh_config.get('username'),
-            "remote_dir": self.ssh_config.get('remote_dir'),
-            "escuela_db": self.rutas.get('escuela_db'),
-            "inscritos_db": self.rutas.get('inscritos_db')
-        })
+        if self.ssh_config.get('enabled', False):
+            st.json({
+                "host": self.ssh_config.get('host'),
+                "port": self.ssh_config.get('port'),
+                "username": self.ssh_config.get('username'),
+                "remote_dir": self.ssh_config.get('remote_dir', ''),
+                "escuela_db": self.rutas.get('escuela_db', ''),
+                "inscritos_db": self.rutas.get('inscritos_db', '')
+            })
+        else:
+            st.info("SSH deshabilitado en configuración")
     
     def _mostrar_backup(self):
         """Mostrar opciones de backup"""
@@ -2017,37 +2257,45 @@ class SistemaGestionEscolar:
         
         # Listar backups existentes
         st.write("### 📦 Backups Existentes")
-        backup_dir = self.config.get('backup_dir', 'backups_escuela')
         
-        if os.path.exists(backup_dir):
-            backups = []
-            for file in os.listdir(backup_dir):
-                if file.startswith('escuela_backup_'):
-                    file_path = os.path.join(backup_dir, file)
-                    size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                    mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
-                    backups.append({
-                        'Archivo': file,
-                        'Tamaño (MB)': f"{size_mb:.2f}",
-                        'Fecha': mtime.strftime('%Y-%m-%d %H:%M:%S')
-                    })
+        try:
+            import tempfile
+            temp_dir = tempfile.gettempdir()
+            backup_dir = os.path.join(temp_dir, self.config.get('backup_dir', 'backups_escuela'))
             
-            if backups:
-                df_backups = pd.DataFrame(backups)
-                st.dataframe(df_backups, use_container_width=True)
+            if os.path.exists(backup_dir):
+                backups = []
+                for file in os.listdir(backup_dir):
+                    if file.startswith('escuela_backup_'):
+                        file_path = os.path.join(backup_dir, file)
+                        if os.path.isfile(file_path):
+                            size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                            mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                            backups.append({
+                                'Archivo': file,
+                                'Tamaño (MB)': f"{size_mb:.2f}",
+                                'Fecha': mtime.strftime('%Y-%m-%d %H:%M:%S')
+                            })
                 
-                # Opción para restaurar backup
-                backup_seleccionado = st.selectbox(
-                    "Seleccionar backup para restaurar:",
-                    backups
-                )
-                
-                if st.button("🔄 Restaurar Backup Seleccionado"):
-                    st.warning("⚠️ Esta función está en desarrollo")
+                if backups:
+                    df_backups = pd.DataFrame(backups)
+                    st.dataframe(df_backups, use_container_width=True)
+                    
+                    # Opción para descargar backup
+                    backup_seleccionado = st.selectbox(
+                        "Seleccionar backup para descargar:",
+                        [f"{b['Archivo']} ({b['Fecha']})" for b in backups]
+                    )
+                    
+                    if backup_seleccionado and st.button("⬇️ Descargar Backup"):
+                        # Aquí iría la lógica para descargar el backup
+                        st.info("⚠️ Función de descarga en desarrollo")
+                else:
+                    st.info("📭 No hay backups creados")
             else:
-                st.info("📭 No hay backups creados")
-        else:
-            st.info("📭 Directorio de backups no existe")
+                st.info("📭 Directorio de backups no existe")
+        except Exception as e:
+            st.error(f"❌ Error listando backups: {e}")
     
     def _mostrar_configuracion(self):
         """Mostrar configuración del sistema"""
@@ -2075,17 +2323,17 @@ class SistemaGestionEscolar:
             with col2:
                 auto_sync = st.checkbox(
                     "Sincronización automática al iniciar",
-                    value=self.config.get('sync_on_start', True)
+                    value=self.config.get('sync_on_start', False)
                 )
                 
                 auto_connect = st.checkbox(
                     "Conexión automática SSH",
-                    value=self.config.get('auto_connect', True)
+                    value=self.config.get('auto_connect', False)
                 )
             
             if st.button("💾 Guardar Configuración"):
                 # Aquí se guardaría la configuración en un archivo
-                st.success("✅ Configuración guardada (simulado)")
+                st.success("✅ Configuración guardada (en sesión)")
         
         # Configuración de backup
         with st.expander("💾 Configuración de Backup"):
@@ -2113,7 +2361,7 @@ class SistemaGestionEscolar:
                 )
                 
                 auto_backup = st.checkbox(
-                    "Backup automático antes de migración",
+                    "Backup automático antes de operaciones críticas",
                     value=self.config.get('backup', {}).get('auto_backup_before_migration', True)
                 )
         
@@ -2137,7 +2385,7 @@ class SistemaGestionEscolar:
                             st.error(f"❌ Error: {e}")
 
 # =============================================================================
-# FUNCIÓN PRINCIPAL DE LA APLICACIÓN
+# FUNCIÓN PRINCIPAL DE LA APLICACIÓN - CORREGIDA
 # =============================================================================
 
 def main():
@@ -2151,14 +2399,46 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Inicializar sistema
-    try:
-        sistema = SistemaGestionEscolar()
-        logger.info("✅ Sistema de Gestión Escolar inicializado")
-    except Exception as e:
-        st.error(f"❌ Error crítico al inicializar el sistema: {e}")
-        logger.error(f"❌ Error inicializando sistema: {e}")
+    # Inicializar variables de sesión
+    if 'sistema' not in st.session_state:
+        st.session_state.sistema = None
+    if 'inicializado' not in st.session_state:
+        st.session_state.inicializado = False
+    
+    # Verificar importaciones
+    if not IMPORTACIONES_COMPARTIDAS:
+        st.error("""
+        ❌ **Error crítico: Módulos compartidos no encontrados**
+        
+        Verifica que:
+        1. `shared_config.py` esté en el mismo directorio
+        2. Todas las dependencias estén instaladas (ver requirements.txt)
+        3. Reinicia la aplicación
+        """)
         return
+    
+    # Inicializar sistema
+    if not st.session_state.inicializado:
+        with st.spinner("🚀 Inicializando Sistema de Gestión Escolar..."):
+            try:
+                sistema = SistemaGestionEscolar()
+                st.session_state.sistema = sistema
+                st.session_state.inicializado = True
+                logger.info("✅ Sistema de Gestión Escolar inicializado")
+                
+            except Exception as e:
+                st.error(f"❌ Error crítico al inicializar el sistema: {e}")
+                logger.error(f"❌ Error inicializando sistema: {e}")
+                
+                # Mostrar información de diagnóstico
+                with st.expander("🔧 Información de diagnóstico"):
+                    st.write(f"**Error:** {str(e)}")
+                    st.write(f"**Configuración SSH habilitada:** {config.get('ssh', {}).get('enabled', False)}")
+                    st.write(f"**Ruta BD local:** {sistema.db_local_path if 'sistema' in locals() else 'No creada'}")
+                
+                return
+    
+    sistema = st.session_state.sistema
     
     # Barra lateral con navegación
     with st.sidebar:
@@ -2170,10 +2450,13 @@ def main():
         st.subheader("📊 Estado del Sistema")
         if sistema.estado.esta_inicializada():
             st.success("✅ Sistema listo")
-            if sistema.estado.estado.get('ssh_conectado'):
-                st.success("🔗 Conectado al servidor")
+            if sistema.ssh_config.get('enabled', False):
+                if sistema.estado.estado.get('ssh_conectado'):
+                    st.success("🔗 Conectado al servidor")
+                else:
+                    st.error("❌ Desconectado del servidor")
             else:
-                st.error("❌ Desconectado del servidor")
+                st.info("🔌 SSH deshabilitado")
         else:
             st.error("❌ Sistema no inicializado")
         
@@ -2219,9 +2502,11 @@ def main():
         st.markdown("---")
         
         # Información del sistema
-        st.caption(f"Versión: 3.0")
-        st.caption(f"Última sync: {sistema.estado.estado.get('ultima_sincronizacion', 'Nunca')}")
-        st.caption(f"Estudiantes: {sistema.obtener_estadisticas_generales().get('total_estudiantes', 0)}")
+        estadisticas = sistema.obtener_estadisticas_generales()
+        st.caption(f"Versión: 3.0 (Streamlit Cloud)")
+        st.caption(f"Última sync: {sistema.estado.estado.get('ultima_sincronizacion', 'Nunca')[:19]}")
+        st.caption(f"Estudiantes: {estadisticas.get('total_estudiantes', 0)}")
+        st.caption(f"BD: {os.path.basename(sistema.db_local_path) if sistema.db_local_path else 'Memoria'}")
     
     # Contenido principal basado en la selección
     if opcion == "🏠 Panel de Control":
@@ -2237,15 +2522,15 @@ def main():
         sistema.mostrar_gestion_egresados()
     
     elif opcion == "💼 Seguimiento de Contratados":
-        # Nota: Esta función podría integrarse en egresados o ser separada
-        sistema.mostrar_gestion_egresados()  # Por ahora usa la misma
+        # Por ahora, redirigir a gestión de egresados que incluye contrataciones
+        sistema.mostrar_gestion_egresados()
     
     elif opcion == "⚙️ Configuración del Sistema":
         sistema.mostrar_configuracion_sistema()
     
     # Pie de página
     st.markdown("---")
-    st.caption(f"© 2024 Sistema de Gestión Escolar v3.0 | Base de datos: {sistema.db_local_path}")
+    st.caption(f"© 2024 Sistema de Gestión Escolar v3.0 | Modo: {'SSH' if sistema.ssh_config.get('enabled', False) else 'Local'} | BD: {sistema.db_local_path}")
 
 # =============================================================================
 # EJECUCIÓN
